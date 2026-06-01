@@ -1,0 +1,167 @@
+defaults: &article_defaults
+  include_url_patterns: []
+  exclude_url_patterns: []
+  include_liveblogs: false
+  include_opinion: true
+  include_sports: true
+  allow_month_fallback: false
+  gdelt_discovery: true
+  gdelt_discovery_limit: 50
+  request_delay_seconds: 1.5
+  max_concurrency_per_domain: 1
+  max_retries: 2
+
+wayback:
+  wayback_enabled: true
+  wayback_strategy: "fallback_only"
+  wayback_max_days_after: 7
+  wayback_max_days_before: 1
+  wayback_request_delay_seconds: 1.5
+  wayback_max_retries: 2
+  wayback_timeout_seconds: 45
+  wayback_use_cdx: true
+  wayback_use_availability: true
+  wayback_extended_search: true
+  wayback_extended_max_days_after: 30
+  wayback_extended_max_days_before: 7
+  wayback_discovery_enabled: true
+  wayback_discovery_max_urls_per_media: 250
+  wayback_discovery_max_days_after: 3
+  wayback_discovery_max_days_before: 0
+  wayback_discovery_timeout_seconds: 15
+  wayback_discovery_max_retries: 0
+  wayback_discovery_min_candidates: 2
+
+gdelt:
+  gdelt_enabled: true
+  gdelt_max_results_per_media: 100
+  gdelt_request_delay_seconds: 12
+  gdelt_max_retries: 2
+  gdelt_retry_delay_seconds: 15
+  gdelt_timeout_seconds: 30
+
+media:
+  - name: "El Pais"
+    <<: *article_defaults
+    domain: "elpais.com"
+    sitemap_urls:
+      - "https://elpais.com/sitemaps/{year}/{month}/sitemap_{page}.xml"
+    sitemap_page_range: [0, 5]
+    rss_feeds:
+      - "https://elpais.com/rss/elpais/portada.xml"
+
+  - name: "El Mundo"
+    <<: *article_defaults
+    domain: "elmundo.es"
+    sitemap_urls: []
+    rss_feeds:
+      - "https://www.elmundo.es/rss/portada.xml"
+
+  - name: "ABC"
+    <<: *article_defaults
+    domain: "abc.es"
+    gdelt_discovery_limit: 100
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 2
+    wayback_discovery_limit: 250
+    sitemap_urls:
+      - "https://www.abc.es/sitemap-index.xml"
+      - "https://www.abc.es/sitemap_news.xml"
+    rss_feeds: []
+
+  - name: "La Razon"
+    <<: *article_defaults
+    domain: "larazon.es"
+    sitemap_urls: []
+    rss_feeds:
+      - "https://www.larazon.es/arcio/rss/category/espana/"
+      - "https://www.larazon.es/arcio/rss/category/internacional/"
+      - "https://www.larazon.es/arcio/rss/category/economia/"
+
+  - name: "La Vanguardia"
+    <<: *article_defaults
+    domain: "lavanguardia.com"
+    gdelt_discovery_limit: 100
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 2
+    wayback_discovery_limit: 250
+    sitemap_urls:
+      - "https://www.lavanguardia.com/sitemap-news.xml"
+    rss_feeds: []
+
+  - name: "El Confidencial"
+    <<: *article_defaults
+    domain: "elconfidencial.com"
+    sitemap_urls: []
+    rss_feeds:
+      - "https://rss.elconfidencial.com/espana/"
+      - "https://rss.elconfidencial.com/mundo/"
+      - "https://rss.elconfidencial.com/economia/"
+
+  - name: "eldiario.es"
+    <<: *article_defaults
+    domain: "eldiario.es"
+    sitemap_urls:
+      - "https://www.eldiario.es/sitemap_index_25b87.xml"
+      - "https://www.eldiario.es/sitemap_google_news_25b87.xml"
+    rss_feeds: []
+
+  - name: "Publico"
+    <<: *article_defaults
+    domain: "publico.es"
+    sitemap_urls:
+      - "https://www.publico.es/sitemap-index.xml"
+    rss_feeds: []
+
+  - name: "Expansion"
+    <<: *article_defaults
+    domain: "expansion.com"
+    sitemap_urls: []
+    rss_feeds:
+      - "https://e01-expansion.uecdn.es/rss/portada.xml"
+      - "https://e01-expansion.uecdn.es/rss/economia.xml"
+      - "https://e01-expansion.uecdn.es/rss/empresas.xml"
+
+  - name: "Cinco Dias"
+    <<: *article_defaults
+    domain: "cincodias.elpais.com"
+    sitemap_urls:
+      - "https://cincodias.elpais.com/sitemaps/{year}/{month}/sitemap_{page}.xml"
+    sitemap_page_range: [0, 5]
+    rss_feeds: []
+
+  - name: "El Economista"
+    <<: *article_defaults
+    domain: "eleconomista.es"
+    gdelt_discovery_limit: 100
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 2
+    wayback_discovery_limit: 250
+    sitemap_urls:
+      - "https://www.eleconomista.es/sitemap_news_ssl.php"
+      - "https://www.eleconomista.es/sitemap_ssl.xml"
+      - "https://www.eleconomista.es/sitemap_noticias.php"
+    rss_feeds:
+      - "https://www.eleconomista.es/rss/rss-portada.php"
+      - "https://www.eleconomista.es/rss/seleccion-ee.xml"
+
+  - name: "Marca"
+    <<: *article_defaults
+    domain: "marca.com"
+    gdelt_discovery_limit: 100
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 2
+    wayback_discovery_limit: 250
+    sitemap_urls: []
+    rss_feeds:
+      - "https://e00-marca.uecdn.es/rss/portada.xml"
+
+  - name: "AS"
+    <<: *article_defaults
+    domain: "as.com"
+    allow_month_fallback: true
+    sitemap_urls:
+      - "https://as.com/sitemaps/{year}/{month}/sitemap_{page}.xml"
+    sitemap_page_range: [0, 5]
+    rss_feeds:
+      - "https://as.com/rss/tags/ultimas_noticias.xml"
