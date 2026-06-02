@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from src.utils import load_environment, response_summary
+from src.utils import load_environment, response_summary, sanitize_pangram_response
 
 LOGGER = logging.getLogger(__name__)
 PANGRAM_ENDPOINT = "https://text.api.pangram.com/v3"
@@ -88,7 +88,7 @@ def analyze_text_fragments(text: str) -> dict[str, Any]:
 
     responses: list[dict[str, Any]] = []
     for fragment in fragments:
-        response = analyze_text(fragment.text)
+        response = sanitize_pangram_response(analyze_text(fragment.text))
         responses.append(
             {
                 "fragment_index": fragment.index,

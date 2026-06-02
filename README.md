@@ -8,7 +8,7 @@ El pipeline:
 2. extrae texto limpio con `trafilatura`;
 3. deduplica por URL normalizada y hash de texto;
 4. envia solo 2-3 fragmentos aleatorios a Pangram, no el articulo completo;
-5. borra el texto scrapeado de SQLite tras guardar la respuesta Pangram;
+5. borra de SQLite todo el texto scrapeado de la fecha tras ejecutar Pangram;
 6. guarda resultados, errores y trazabilidad en SQLite;
 7. exporta reportes CSV/JSON para revisar cobertura y calidad.
 
@@ -98,7 +98,16 @@ python -m src.main analyze --date 2026-05-01 --start-time 05:00 --hours 4 --per-
 python -m src.main analyze --date 2026-05-01 --start-time 05:00 --hours 4 --per-media-limit 10
 ```
 
-Por privacidad y minimizacion de datos, `analyze` no envia el articulo completo a Pangram. Para cada articulo selecciona aleatoriamente 2 o 3 fragmentos de 300 a 500 palabras, envia cada fragmento por separado y guarda una respuesta agregada sin conservar el texto de los fragmentos. Si un articulo tiene menos de 300 palabras, se envia un unico fragmento corto con el texto disponible. Tras guardar un resultado Pangram `ok` o `reused`, `articles.text_clean` se borra de SQLite; se conservan metadatos, `word_count`, `text_hash`, URL, estado de extraccion y respuesta Pangram.
+Por privacidad y minimizacion de datos, `analyze` no envia el articulo completo a Pangram. Para cada articulo selecciona aleatoriamente 2 o 3 fragmentos de 300 a 500 palabras, envia cada fragmento por separado y guarda una respuesta agregada sin conservar el texto de los fragmentos. Si un articulo tiene menos de 300 palabras, se envia un unico fragmento corto con el texto disponible.
+
+Tras una ejecucion real de `analyze`, el proyecto borra por defecto **todo** `articles.text_clean` de esa fecha, tanto de articulos enviados a Pangram como de articulos extraidos pero no enviados por limite de coste. Se conservan metadatos, `word_count`, `text_hash`, URL, estado de extraccion y respuesta Pangram redactada. Si despues quieres analizar mas articulos de esa misma fecha, vuelve a ejecutar `extract` para reconstruir temporalmente el texto.
+
+Tambien puedes purgar textos manualmente:
+
+```powershell
+python -m src.main purge-texts --date 2026-05-31
+python -m src.main purge-texts --all
+```
 
 Variables opcionales:
 
@@ -122,6 +131,7 @@ python -m src.main analyze --date 2026-05-31 --dry-run
 python -m src.main analyze --date 2026-05-31 --per-media-limit 10
 python -m src.main report --date 2026-05-31
 python -m src.main validate --date 2026-05-31 --sample-size 10
+python -m src.main purge-texts --date 2026-05-31
 ```
 
 `audit-sources` y `audit-wayback` son diagnosticos: no sustituyen a `discover` ni a `extract`.
@@ -186,7 +196,7 @@ Hay dos usos distintos de Wayback:
 
 - `validation_summary_YYYY-MM-DD.csv`: metricas por medio.
 - `validation_YYYY-MM-DD.json`: metricas completas y warnings.
-- `validation_sample_YYYY-MM-DD.csv`: muestra manual con preview de texto.
+- `validation_sample_YYYY-MM-DD.csv`: muestra manual sin texto scrapeado; la columna `text_preview` se mantiene vacia por seguridad.
 
 Warnings automaticos:
 
@@ -367,7 +377,7 @@ Hay constraints para URL normalizada, fecha + medio + URL normalizada y hash de 
 
 ## Advertencia Legal
 
-Este proyecto guarda texto completo para analisis interno local. No redistribuyas, publiques ni reutilices textos completos de terceros sin licencia o permiso adecuado. Esto aplica tambien a textos recuperados desde Wayback Machine.
+Este proyecto puede mantener texto completo solo de forma temporal entre `extract` y `analyze`. Tras una ejecucion real de Pangram, o al ejecutar `purge-texts`, el cuerpo extraido se borra de SQLite y se conservan hashes, metadatos y resultados redactados. No redistribuyas, publiques ni reutilices textos completos de terceros sin licencia o permiso adecuado. Esto aplica tambien a textos recuperados desde Wayback Machine.
 
 Revisa robots.txt, terminos de uso, limites de cada medio y condiciones de Internet Archive. Publicar solo metricas agregadas o pequenas citas permitidas por la legislacion aplicable suele ser mucho mas seguro que publicar corpus completos.
 
@@ -403,7 +413,7 @@ Archivos que no deben publicarse:
 - `data/`
 - `exports/`
 - bases SQLite;
-- CSV/JSON con previews o textos completos;
+- CSV/JSON con textos completos;
 - logs con URLs, errores o respuestas de APIs.
 
 ## Seguridad

@@ -92,7 +92,7 @@ def test_validate_rows_metrics_and_warnings() -> None:
     assert "far_wayback_snapshot" in codes
     assert "suspect_urls" in codes
     assert "many_short_texts" in codes
-    assert samples[0]["text_preview"]
+    assert samples[0]["text_preview"] == ""
 
 
 def test_export_validation_writes_three_files(tmp_path) -> None:

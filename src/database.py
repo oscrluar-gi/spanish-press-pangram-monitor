@@ -8,7 +8,14 @@ from typing import Any, Iterable
 
 from src.models import DiscoveredURL, ExtractedArticle, MediaConfig
 from src.wayback_client import WaybackSnapshot, build_wayback_raw_url
-from src.utils import ensure_parent_dir, json_dumps, normalize_article_url, response_model_version, response_summary
+from src.utils import (
+    ensure_parent_dir,
+    json_dumps,
+    normalize_article_url,
+    response_model_version,
+    response_summary,
+    sanitize_pangram_response,
+)
 
 DEFAULT_DB_PATH = "data/press_monitor.sqlite"
 
@@ -520,6 +527,7 @@ def save_pangram_result(
     status: str,
     error: str | None = None,
 ) -> None:
+    response = sanitize_pangram_response(response) if response is not None else None
     prediction, score = response_summary(response)
     model_version = response_model_version(response)
     response_json = json_dumps(response) if response is not None else None
@@ -568,6 +576,31 @@ def purge_article_text(conn: sqlite3.Connection, article_id: int) -> None:
         (article_id,),
     )
     conn.commit()
+
+
+def purge_article_texts(conn: sqlite3.Connection, target_date: str | None = None) -> int:
+    if target_date is None:
+        cursor = conn.execute(
+            """
+            UPDATE articles
+            SET text_clean = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE text_clean IS NOT NULL
+            """
+        )
+    else:
+        cursor = conn.execute(
+            """
+            UPDATE articles
+            SET text_clean = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE target_date = ?
+              AND text_clean IS NOT NULL
+            """,
+            (target_date,),
+        )
+    conn.commit()
+    return int(cursor.rowcount or 0)
 
 
 def log_run(conn: sqlite3.Connection, run_type: str, target_date: str | None, status: str, message: str | None = None) -> None:

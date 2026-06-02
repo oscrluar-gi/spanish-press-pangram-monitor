@@ -128,7 +128,7 @@ def _warnings_for_media(
 
 def _sample_rows(rows: list[dict[str, Any]], sample_size: int) -> list[dict[str, Any]]:
     article_rows = [row for row in rows if row.get("article_id")]
-    selected = sorted(article_rows, key=lambda row: 0 if row.get("text_clean") else 1)[:sample_size]
+    selected = sorted(article_rows, key=lambda row: row.get("url") or row.get("discovered_url") or "")[:sample_size]
     return [
         {
             "media_name": row["media_name"],
@@ -140,7 +140,7 @@ def _sample_rows(rows: list[dict[str, Any]], sample_size: int) -> list[dict[str,
             "content_source": row.get("content_source"),
             "wayback_timestamp": row.get("wayback_timestamp"),
             "wayback_distance_hours": round(float(row["wayback_distance_seconds"]) / 3600, 2) if row.get("wayback_distance_seconds") is not None else None,
-            "text_preview": (row.get("text_clean") or "")[:500],
+            "text_preview": "",
             "skip_reason": row.get("skip_reason") or row.get("error"),
         }
         for row in selected

@@ -212,6 +212,7 @@ def analyze_command(
     per_media_limit: int = typer.Option(10, "--per-media-limit", help="Maximum articles per media to analyze. Use 0 for unlimited."),
     force: bool = typer.Option(False, "--force", help="Reanalyze articles even if they already have Pangram results."),
     include_incomplete: bool = typer.Option(False, "--include-incomplete", help="Also send too_short and paywall_or_incomplete articles."),
+    purge_texts: bool = typer.Option(True, "--purge-texts/--retain-texts", help="Purge all scraped article text for this date after analysis. Enabled by default."),
     start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
     hours: Optional[int] = typer.Option(None, "--hours", help="Optional window length in hours from --start-time."),
@@ -267,8 +268,11 @@ def analyze_command(
         database.log_run(conn, "analyze_dry_run", date, "ok", f"{len(rows)} candidates, {per_media_label}{window_label}")
         return
     if not rows:
+        purged = database.purge_article_texts(conn, date) if purge_texts else 0
         database.log_run(conn, "analyze", date, "ok", f"No articles ready, {per_media_label}{window_label}")
         typer.echo("No extracted articles ready for analysis.")
+        if purge_texts:
+            typer.echo(f"Privacy purge complete: {purged} stored article text(s) removed for {date}.")
         return
 
     analyzed = 0
@@ -293,8 +297,11 @@ def analyze_command(
             database.save_pangram_result(conn, int(row["id"]), text_hash, None, "error", str(exc))
             LOGGER.warning("Pangram failed for article %s: %s", row["id"], exc)
             failed += 1
+    purged = database.purge_article_texts(conn, date) if purge_texts else 0
     database.log_run(conn, "analyze", date, "ok", f"{analyzed} analyzed, {reused} reused, {failed} failed, {per_media_label}{window_label}")
     typer.echo(f"Analysis complete: {analyzed} analyzed, {reused} reused, {failed} failed ({per_media_label}).{window_label}")
+    if purge_texts:
+        typer.echo(f"Privacy purge complete: {purged} stored article text(s) removed for {date}.")
 
 
 @app.command()
@@ -313,6 +320,26 @@ def run(
     discover(date=date, config=config, start_time=start_time, end_time=end_time, hours=hours)
     extract(date=date, wayback=wayback, config=config, start_time=start_time, end_time=end_time, hours=hours)
     analyze_command(date=date, per_media_limit=per_media_limit, start_time=start_time, end_time=end_time, hours=hours)
+
+
+@app.command("purge-texts")
+def purge_texts_command(
+    date: Optional[str] = typer.Option(None, "--date", help="Target date in YYYY-MM-DD format. Omit with --all to purge every date."),
+    all_dates: bool = typer.Option(False, "--all", help="Purge scraped article text for every date in the SQLite database."),
+) -> None:
+    """Remove scraped article text while keeping metadata, hashes, and Pangram results."""
+    setup_logging()
+    if not date and not all_dates:
+        raise typer.BadParameter("Pass --date YYYY-MM-DD or --all")
+    if date and all_dates:
+        raise typer.BadParameter("Use either --date or --all, not both")
+    if date:
+        parse_target_date(date)
+    conn, _ = _prepare_db()
+    purged = database.purge_article_texts(conn, None if all_dates else date)
+    target = "all dates" if all_dates else str(date)
+    database.log_run(conn, "purge_texts", date, "ok", f"{purged} stored article texts removed for {target}")
+    typer.echo(f"Privacy purge complete: {purged} stored article text(s) removed for {target}.")
 
 
 @app.command("audit-sources")

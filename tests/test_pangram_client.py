@@ -57,7 +57,11 @@ def test_analyze_text_fragments_does_not_return_fragment_text(monkeypatch: pytes
 
     def fake_analyze_text(text: str) -> dict[str, object]:
         calls.append(text)
-        return {"prediction": "human", "score": 0.1}
+        return {
+            "prediction": "human",
+            "score": 0.1,
+            "segments": [{"text": text, "label": "human"}],
+        }
 
     monkeypatch.setattr(pangram_client, "analyze_text", fake_analyze_text)
     monkeypatch.setenv("PANGRAM_FRAGMENT_RANDOM_SEED", "123")
@@ -71,3 +75,4 @@ def test_analyze_text_fragments_does_not_return_fragment_text(monkeypatch: pytes
         assert "text" not in fragment
         assert 300 <= fragment["word_count"] <= 500
         assert fragment["response"]["prediction"] == "human"
+        assert fragment["response"]["segments"][0]["text"] == "[redacted]"

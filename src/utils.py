@@ -51,6 +51,13 @@ ALLOWED_QUERY_PARAMS = {
     "pos",
     "date",
 }
+PANGRAM_TEXT_KEYS = {
+    "content",
+    "input_text",
+    "segment_text",
+    "text",
+    "text_content",
+}
 
 
 def load_environment() -> None:
@@ -230,6 +237,21 @@ def response_model_version(response: dict[str, Any] | None) -> Any:
     if not response:
         return None
     return _first_value_for_keys(response, ("model_version", "modelVersion", "version"))
+
+
+def sanitize_pangram_response(value: Any) -> Any:
+    """Remove text-bearing fields from a Pangram response before persistence."""
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, child in value.items():
+            if key.lower() in PANGRAM_TEXT_KEYS:
+                cleaned[key] = "[redacted]"
+            else:
+                cleaned[key] = sanitize_pangram_response(child)
+        return cleaned
+    if isinstance(value, list):
+        return [sanitize_pangram_response(child) for child in value]
+    return value
 
 
 def _first_value_for_keys(value: Any, keys: tuple[str, ...]) -> Any:

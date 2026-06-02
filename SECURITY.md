@@ -15,7 +15,7 @@ If a Pangram key is accidentally committed, revoke it in Pangram immediately and
 
 ## Data Sensitivity
 
-SQLite databases and exports can contain full article text, URLs, metadata, Pangram responses, and operational logs. Treat them as local research artifacts. Do not publish them unless you have the rights and consent needed to redistribute that content.
+SQLite databases can contain full article text temporarily between extraction and analysis. The default analysis flow purges stored article text for the target date after Pangram runs, and `purge-texts` can remove it manually. Databases and exports may still contain URLs, metadata, redacted Pangram responses, and operational logs. Treat them as local research artifacts and do not publish them unless you have the rights and consent needed to redistribute that content.
 
 ## Reporting Issues
 
