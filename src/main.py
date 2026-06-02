@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
+import random
 import sys
 from collections import Counter
 from datetime import datetime
@@ -83,6 +85,47 @@ def _time_window_label(time_window: tuple[datetime, datetime] | None) -> str:
         return ""
     start, end = time_window
     return f" window={start.isoformat()}..{end.isoformat()}"
+
+
+def _article_row_in_time_window(row: object, time_window: tuple[datetime, datetime] | None) -> bool:
+    if time_window is None:
+        return True
+    start, end = time_window
+    for key in ("article_published_at", "published_at"):
+        try:
+            value = row[key]  # type: ignore[index]
+        except (KeyError, IndexError):
+            value = None
+        parsed = parse_datetime(value)
+        if parsed:
+            return start <= parsed < end
+    return False
+
+
+def _limit_rows_per_media(rows: list[object], per_media_limit: int) -> list[object]:
+    if per_media_limit <= 0:
+        return rows
+
+    grouped: dict[str, list[object]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["media_name"]), []).append(row)  # type: ignore[index]
+
+    rng = _article_sample_random_source()
+    selected: list[object] = []
+    for media_name in sorted(grouped):
+        media_rows = grouped[media_name]
+        if len(media_rows) > per_media_limit:
+            media_rows = rng.sample(media_rows, per_media_limit)
+            media_rows.sort(key=lambda row: str(row["url"]))  # type: ignore[index]
+        selected.extend(media_rows)
+    return selected
+
+
+def _article_sample_random_source() -> random.Random:
+    seed = os.getenv("PANGRAM_ARTICLE_SAMPLE_SEED")
+    if seed:
+        return random.Random(seed)
+    return random.SystemRandom()
 
 
 @app.command()
@@ -166,31 +209,48 @@ def analyze_command(
     date: str = typer.Option(..., "--date", help="Target publication date in YYYY-MM-DD format."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be sent without calling Pangram."),
     limit: Optional[int] = typer.Option(None, "--limit", help="Maximum number of articles to analyze."),
+    per_media_limit: int = typer.Option(10, "--per-media-limit", help="Maximum articles per media to analyze. Use 0 for unlimited."),
     force: bool = typer.Option(False, "--force", help="Reanalyze articles even if they already have Pangram results."),
     include_incomplete: bool = typer.Option(False, "--include-incomplete", help="Also send too_short and paywall_or_incomplete articles."),
+    start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
+    end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
+    hours: Optional[int] = typer.Option(None, "--hours", help="Optional window length in hours from --start-time."),
 ) -> None:
     """Analyze extracted articles with Pangram, reusing duplicate text hashes."""
     setup_logging()
     load_environment()
     parse_target_date(date)
+    time_window = _build_time_window(date, start_time, end_time, hours)
+    if per_media_limit < 0:
+        raise typer.BadParameter("per-media-limit must be zero or greater")
     conn, _ = _prepare_db()
     rows = database.articles_ready_for_analysis(
         conn,
         date,
         include_incomplete=include_incomplete,
         force=force,
-        limit=limit,
+        limit=None,
     )
+    rows = [row for row in rows if _article_row_in_time_window(row, time_window)]
+    rows = _limit_rows_per_media(rows, per_media_limit)
+    if limit is not None:
+        rows = rows[: max(0, limit)]
+    window_label = _time_window_label(time_window)
+    per_media_label = "unlimited per media" if per_media_limit == 0 else f"max {per_media_limit} per media"
     if dry_run:
-        typer.echo(f"Dry run: {len(rows)} articles would be sent to Pangram.")
+        typer.echo(f"Dry run: {len(rows)} articles would be sent to Pangram ({per_media_label}).{window_label}")
         if not rows and not force:
             forced_rows = database.articles_ready_for_analysis(
                 conn,
                 date,
                 include_incomplete=include_incomplete,
                 force=True,
-                limit=limit,
+                limit=None,
             )
+            forced_rows = [row for row in forced_rows if _article_row_in_time_window(row, time_window)]
+            forced_rows = _limit_rows_per_media(forced_rows, per_media_limit)
+            if limit is not None:
+                forced_rows = forced_rows[: max(0, limit)]
             pangram_counts = database.pangram_status_counts_for_date(conn, date)
             if forced_rows and pangram_counts.get("error", 0):
                 typer.echo(
@@ -204,10 +264,10 @@ def analyze_command(
                 f"- {row['media_name']}: {row['url']} "
                 f"({row['word_count']} words, {fragment_count} fragment(s))"
             )
-        database.log_run(conn, "analyze_dry_run", date, "ok", f"{len(rows)} candidates")
+        database.log_run(conn, "analyze_dry_run", date, "ok", f"{len(rows)} candidates, {per_media_label}{window_label}")
         return
     if not rows:
-        database.log_run(conn, "analyze", date, "ok", "No articles ready")
+        database.log_run(conn, "analyze", date, "ok", f"No articles ready, {per_media_label}{window_label}")
         typer.echo("No extracted articles ready for analysis.")
         return
 
@@ -233,8 +293,8 @@ def analyze_command(
             database.save_pangram_result(conn, int(row["id"]), text_hash, None, "error", str(exc))
             LOGGER.warning("Pangram failed for article %s: %s", row["id"], exc)
             failed += 1
-    database.log_run(conn, "analyze", date, "ok", f"{analyzed} analyzed, {reused} reused, {failed} failed")
-    typer.echo(f"Analysis complete: {analyzed} analyzed, {reused} reused, {failed} failed.")
+    database.log_run(conn, "analyze", date, "ok", f"{analyzed} analyzed, {reused} reused, {failed} failed, {per_media_label}{window_label}")
+    typer.echo(f"Analysis complete: {analyzed} analyzed, {reused} reused, {failed} failed ({per_media_label}).{window_label}")
 
 
 @app.command()
@@ -242,13 +302,17 @@ def run(
     date: str = typer.Option(..., "--date", help="Target publication date in YYYY-MM-DD format."),
     config: str = typer.Option("config/media.yaml", "--config", help="Media YAML config path."),
     wayback: str = typer.Option("fallback", "--wayback", help="Wayback mode: off, fallback, always."),
+    per_media_limit: int = typer.Option(10, "--per-media-limit", help="Maximum articles per media to analyze. Use 0 for unlimited."),
+    start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
+    end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
+    hours: Optional[int] = typer.Option(None, "--hours", help="Optional window length in hours from --start-time."),
 ) -> None:
     """Run the full discovery, extraction, and Pangram analysis pipeline."""
     load_environment()
     _validate_wayback_mode(wayback)
-    discover(date=date, config=config)
-    extract(date=date, wayback=wayback, config=config)
-    analyze_command(date=date)
+    discover(date=date, config=config, start_time=start_time, end_time=end_time, hours=hours)
+    extract(date=date, wayback=wayback, config=config, start_time=start_time, end_time=end_time, hours=hours)
+    analyze_command(date=date, per_media_limit=per_media_limit, start_time=start_time, end_time=end_time, hours=hours)
 
 
 @app.command("audit-sources")

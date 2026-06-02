@@ -69,6 +69,7 @@ Por defecto se incluyen articulos normales y opinion, y se excluyen tags, autore
 python -m src.main discover --date 2026-05-31
 python -m src.main extract --date 2026-05-31 --wayback fallback
 python -m src.main analyze --date 2026-05-31 --dry-run
+python -m src.main analyze --date 2026-05-31 --per-media-limit 10
 python -m src.main analyze --date 2026-05-31 --limit 50
 python -m src.main run --date 2026-05-31 --wayback fallback
 python -m src.main export --date 2026-05-31 --format csv
@@ -87,6 +88,15 @@ python -m src.main discover --date 2026-05-31 --media abc
 ```
 
 `analyze` no reenvia articulos con resultado Pangram salvo que pases `--force`. Los articulos `no_text`, `too_short` y `paywall_or_incomplete` no se envian salvo que uses `--include-incomplete`.
+
+Para controlar coste, `analyze` envia por defecto como maximo 10 articulos por medio. Puedes cambiarlo con `--per-media-limit X` o desactivar el limite con `--per-media-limit 0`. La seleccion por medio es aleatoria para no sesgar por orden de URL. Si quieres una muestra reproducible, define `PANGRAM_ARTICLE_SAMPLE_SEED` en `.env`.
+
+`analyze` tambien acepta la misma ventana temporal que `discover` y `extract`; por ejemplo:
+
+```powershell
+python -m src.main analyze --date 2026-05-01 --start-time 05:00 --hours 4 --per-media-limit 10 --dry-run
+python -m src.main analyze --date 2026-05-01 --start-time 05:00 --hours 4 --per-media-limit 10
+```
 
 Por privacidad y minimizacion de datos, `analyze` no envia el articulo completo a Pangram. Para cada articulo selecciona aleatoriamente 2 o 3 fragmentos de 300 a 500 palabras, envia cada fragmento por separado y guarda una respuesta agregada sin conservar el texto de los fragmentos. Si un articulo tiene menos de 300 palabras, se envia un unico fragmento corto con el texto disponible. Tras guardar un resultado Pangram `ok` o `reused`, `articles.text_clean` se borra de SQLite; se conservan metadatos, `word_count`, `text_hash`, URL, estado de extraccion y respuesta Pangram.
 
@@ -109,7 +119,7 @@ python -m src.main audit-sources --date 2026-05-31
 python -m src.main extract --date 2026-05-31 --wayback fallback
 python -m src.main audit-wayback --date 2026-05-31
 python -m src.main analyze --date 2026-05-31 --dry-run
-python -m src.main analyze --date 2026-05-31
+python -m src.main analyze --date 2026-05-31 --per-media-limit 10
 python -m src.main report --date 2026-05-31
 python -m src.main validate --date 2026-05-31 --sample-size 10
 ```
