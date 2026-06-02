@@ -18,7 +18,7 @@ from src import database
 from src.audit import audit_sources as run_audit_sources
 from src.discover import discover_all, load_media_config
 from src.extract import iter_extract_many
-from src.pangram_client import PangramError, analyze_text
+from src.pangram_client import PangramError, analyze_text_fragments, select_random_fragments
 from src.source_probes import DEFAULT_STRATEGIES, probe_sources
 from src.utils import load_environment, parse_datetime, parse_target_date, parse_time_window, setup_logging
 from src.validation import export_validation
@@ -199,7 +199,11 @@ def analyze_command(
                     "Fix the API key or transient issue, then retry with --force."
                 )
         for row in rows[:10]:
-            typer.echo(f"- {row['media_name']}: {row['url']} ({row['word_count']} words)")
+            fragment_count = len(select_random_fragments(row["text_clean"]))
+            typer.echo(
+                f"- {row['media_name']}: {row['url']} "
+                f"({row['word_count']} words, {fragment_count} fragment(s))"
+            )
         database.log_run(conn, "analyze_dry_run", date, "ok", f"{len(rows)} candidates")
         return
     if not rows:
@@ -217,11 +221,13 @@ def analyze_command(
             raw = prior["raw_response_json"] or prior["response_json"]
             response = json.loads(raw)
             database.save_pangram_result(conn, int(row["id"]), text_hash, response, "reused")
+            database.purge_article_text(conn, int(row["id"]))
             reused += 1
             continue
         try:
-            response = analyze_text(row["text_clean"])
+            response = analyze_text_fragments(row["text_clean"])
             database.save_pangram_result(conn, int(row["id"]), text_hash, response, "ok")
+            database.purge_article_text(conn, int(row["id"]))
             analyzed += 1
         except PangramError as exc:
             database.save_pangram_result(conn, int(row["id"]), text_hash, None, "error", str(exc))

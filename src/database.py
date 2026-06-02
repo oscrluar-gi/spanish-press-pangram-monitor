@@ -557,6 +557,19 @@ def save_pangram_result(
     conn.commit()
 
 
+def purge_article_text(conn: sqlite3.Connection, article_id: int) -> None:
+    conn.execute(
+        """
+        UPDATE articles
+        SET text_clean = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (article_id,),
+    )
+    conn.commit()
+
+
 def log_run(conn: sqlite3.Connection, run_type: str, target_date: str | None, status: str, message: str | None = None) -> None:
     conn.execute(
         "INSERT INTO run_log (run_type, target_date, status, message) VALUES (?, ?, ?, ?)",

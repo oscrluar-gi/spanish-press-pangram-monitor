@@ -7,9 +7,10 @@ El pipeline:
 1. descubre URLs de articulos por fecha usando sitemaps, RSS, GDELT y, opcionalmente, Wayback/CDX;
 2. extrae texto limpio con `trafilatura`;
 3. deduplica por URL normalizada y hash de texto;
-4. envia textos validos a Pangram;
-5. guarda resultados, errores y trazabilidad en SQLite;
-6. exporta reportes CSV/JSON para revisar cobertura y calidad.
+4. envia solo 2-3 fragmentos aleatorios a Pangram, no el articulo completo;
+5. borra el texto scrapeado de SQLite tras guardar la respuesta Pangram;
+6. guarda resultados, errores y trazabilidad en SQLite;
+7. exporta reportes CSV/JSON para revisar cobertura y calidad.
 
 El repositorio debe contener solo codigo, configuracion, tests y documentacion. Las claves, bases SQLite, exports y textos completos son artefactos locales y no deben subirse a GitHub.
 
@@ -86,6 +87,17 @@ python -m src.main discover --date 2026-05-31 --media abc
 ```
 
 `analyze` no reenvia articulos con resultado Pangram salvo que pases `--force`. Los articulos `no_text`, `too_short` y `paywall_or_incomplete` no se envian salvo que uses `--include-incomplete`.
+
+Por privacidad y minimizacion de datos, `analyze` no envia el articulo completo a Pangram. Para cada articulo selecciona aleatoriamente 2 o 3 fragmentos de 300 a 500 palabras, envia cada fragmento por separado y guarda una respuesta agregada sin conservar el texto de los fragmentos. Si un articulo tiene menos de 300 palabras, se envia un unico fragmento corto con el texto disponible. Tras guardar un resultado Pangram `ok` o `reused`, `articles.text_clean` se borra de SQLite; se conservan metadatos, `word_count`, `text_hash`, URL, estado de extraccion y respuesta Pangram.
+
+Variables opcionales:
+
+```env
+PANGRAM_FRAGMENT_MIN_COUNT=2
+PANGRAM_FRAGMENT_MAX_COUNT=3
+PANGRAM_FRAGMENT_MIN_WORDS=300
+PANGRAM_FRAGMENT_MAX_WORDS=500
+```
 
 ## Flujo Recomendado
 

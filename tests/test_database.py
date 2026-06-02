@@ -54,6 +54,47 @@ def test_database_reuses_pangram_hash() -> None:
     assert database.pangram_status_counts_for_date(conn, "2026-05-31") == {"ok": 1}
 
 
+def test_purge_article_text_removes_scraped_text_but_keeps_hash() -> None:
+    conn = database.connect(":memory:")
+    database.initialize_database(conn)
+    item = DiscoveredURL(
+        media_name="Medio",
+        domain="example.com",
+        url="https://example.com/story",
+        discovered_from="sitemap.xml",
+        target_date="2026-05-31",
+    )
+    database.save_discovered_url(conn, item)
+    row = database.discovered_for_date(conn, "2026-05-31")[0]
+    article = ExtractedArticle(
+        url=row["url"],
+        normalized_url=row["normalized_url"],
+        target_date="2026-05-31",
+        title="Title",
+        author=None,
+        article_published_at=None,
+        article_modified_at=None,
+        section=None,
+        tags=[],
+        canonical_url=None,
+        language="es",
+        is_paywalled=False,
+        text_clean="texto limpio",
+        word_count=2,
+        text_hash="abc123",
+        extraction_status="ok",
+    )
+    database.save_article(conn, row["id"], row["media_id"], row["media_name"], row["domain"], article)
+    article_row = database.articles_ready_for_analysis(conn, "2026-05-31")[0]
+
+    database.purge_article_text(conn, article_row["id"])
+
+    stored = conn.execute("SELECT text_clean, text_hash FROM articles WHERE id = ?", (article_row["id"],)).fetchone()
+    assert stored["text_clean"] is None
+    assert stored["text_hash"] == "abc123"
+    assert database.articles_ready_for_analysis(conn, "2026-05-31") == []
+
+
 def test_has_no_ingested_data_detects_empty_date() -> None:
     conn = database.connect(":memory:")
     database.initialize_database(conn)
