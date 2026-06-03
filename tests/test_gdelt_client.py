@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from src.gdelt_client import GdeltClient, format_gdelt_datetime, parse_gdelt_articles, url_matches_domain
+from src.gdelt_client import GdeltClient, format_gdelt_datetime, load_gdelt_config, parse_gdelt_articles, url_matches_domain
 from src.models import GdeltConfig
 
 
@@ -57,7 +57,7 @@ def test_gdelt_client_retries_429_and_filters_domain() -> None:
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         client = GdeltClient(
             client=http_client,
-            config=GdeltConfig(request_delay_seconds=0, max_retries=1, retry_delay_seconds=0),
+            config=GdeltConfig(request_delay_seconds=0, max_retries=1, retry_delay_seconds=0, retry_jitter_seconds=0, cooldown_seconds=0),
         )
         rows = client.find_articles(
             "abc.es",
@@ -69,3 +69,61 @@ def test_gdelt_client_retries_429_and_filters_domain() -> None:
     assert calls == 2
     assert len(rows) == 1
     assert rows[0].url == "https://www.abc.es/espana/story.html"
+
+
+def test_gdelt_client_caches_successful_requests() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={"articles": [{"url": "https://www.abc.es/espana/story.html", "title": "ABC"}]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = GdeltClient(
+            client=http_client,
+            config=GdeltConfig(request_delay_seconds=0, retry_jitter_seconds=0, cooldown_seconds=0),
+        )
+        start = datetime(2026, 5, 1, 0, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        end = datetime(2026, 5, 2, 0, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+
+        assert len(client.find_articles("abc.es", start, end, limit=10)) == 1
+        assert len(client.find_articles("abc.es", start, end, limit=10)) == 1
+
+    assert calls == 1
+
+
+def test_gdelt_client_activates_global_cooldown_after_429() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = GdeltClient(
+            client=http_client,
+            config=GdeltConfig(request_delay_seconds=0, max_retries=1, retry_delay_seconds=0, retry_jitter_seconds=0, cooldown_seconds=300),
+        )
+        start = datetime(2026, 5, 1, 0, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+        end = datetime(2026, 5, 2, 0, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+
+        assert client.find_articles("abc.es", start, end, limit=10) == []
+        assert client.find_articles("elmundo.es", start, end, limit=10) == []
+
+    assert calls == 1
+
+
+def test_load_gdelt_config_defaults_to_lower_maxrecords(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "media.yaml"
+    config_path.write_text("media: []\n", encoding="utf-8")
+    monkeypatch.delenv("GDELT_MAX_RESULTS_PER_MEDIA", raising=False)
+
+    config = load_gdelt_config(str(config_path))
+
+    assert config.max_results_per_media == 25
+    assert config.discovery_min_candidates == 5

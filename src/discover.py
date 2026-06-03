@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import gzip
+import json
 import logging
 import os
 import random
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
-from typing import Iterable
 from urllib.parse import urljoin
 from urllib.robotparser import RobotFileParser
 
@@ -16,7 +16,7 @@ import httpx
 import yaml
 
 from src.gdelt_client import GdeltArticle, GdeltClient, load_gdelt_config
-from src.models import DiscoveredURL, MediaConfig, WaybackConfig
+from src.models import DiscoveredURL, GdeltConfig, MediaConfig, WaybackConfig
 from src.url_filters import should_include_article_url
 from src.utils import (
     DEFAULT_USER_AGENT,
@@ -42,6 +42,8 @@ class SitemapEntry:
     loc: str
     lastmod: str | None = None
     publication_date: str | None = None
+    title: str | None = None
+    metadata: dict[str, object] | None = None
 
 
 class RobotsCache:
@@ -101,6 +103,9 @@ def load_media_config(path: str = "config/media.yaml") -> list[MediaConfig]:
             wayback_discovery_broad=bool(item.get("wayback_discovery_broad", False)),
             gdelt_discovery=bool(item.get("gdelt_discovery", True)),
             gdelt_discovery_limit=_optional_int(item.get("gdelt_discovery_limit")),
+            gdelt_discovery_min_candidates=_optional_int(item.get("gdelt_discovery_min_candidates")),
+            discovery_keywords=list(item.get("discovery_keywords") or []),
+            discovery_keyword_mode=_load_keyword_mode(item.get("discovery_keyword_mode")),
             request_delay_seconds=_optional_float(item.get("request_delay_seconds")),
             max_concurrency_per_domain=_optional_int(item.get("max_concurrency_per_domain")),
             max_retries=_optional_int(item.get("max_retries")),
@@ -150,6 +155,8 @@ def parse_sitemap_xml(xml_bytes: bytes) -> tuple[str, list[SitemapEntry]]:
                 loc=loc.strip(),
                 lastmod=_child_text(node, "lastmod"),
                 publication_date=_descendant_text(node, "publication_date"),
+                title=_descendant_text(node, "title"),
+                metadata=_metadata_from_xml_node(node),
             )
         )
     return tag, entries
@@ -168,7 +175,15 @@ def parse_rss_xml(xml_bytes: bytes) -> list[SitemapEntry]:
         if not loc:
             continue
         published = _child_text(node, "pubDate") or _child_text(node, "published") or _child_text(node, "updated")
-        entries.append(SitemapEntry(loc=loc.strip(), lastmod=published, publication_date=published))
+        entries.append(
+            SitemapEntry(
+                loc=loc.strip(),
+                lastmod=published,
+                publication_date=published,
+                title=_child_text(node, "title"),
+                metadata=_metadata_from_xml_node(node),
+            )
+        )
     return entries
 
 
@@ -267,6 +282,8 @@ def discover_all(
     target_date: str,
     time_window: tuple[datetime, datetime] | None = None,
     media_filter: str | None = None,
+    keywords: list[str] | None = None,
+    keyword_mode: str = "any",
 ) -> list[DiscoveredURL]:
     target = parse_target_date(target_date)
     media_items = load_media_config(config_path)
@@ -293,10 +310,19 @@ def discover_all(
                 for media in media_items:
                     LOGGER.info("Discovering %s (%s)", media.name, media.domain)
                     media_results = discover_media(media, target, client, robots, time_window=time_window)
-                    if should_use_gdelt_discovery(media, gdelt_config.enabled):
-                        media_results.extend(discover_media_gdelt(media, target, gdelt_client, gdelt_config.max_results_per_media, time_window=time_window))
+                    media_results = _filter_discovered_by_keywords(media_results, media, keywords, keyword_mode)
+                    if should_try_gdelt_discovery(media, gdelt_config, len(media_results)):
+                        gdelt_results = discover_media_gdelt(media, target, gdelt_client, gdelt_config.max_results_per_media, time_window=time_window)
+                        media_results = _merge_discovered_rows(
+                            media_results,
+                            _filter_discovered_by_keywords(gdelt_results, media, keywords, keyword_mode),
+                        )
                     if should_try_wayback_discovery(media, wayback_config, len(media_results)):
-                        media_results.extend(discover_media_wayback_cdx(media, target, wayback_client, wayback_config, time_window=time_window))
+                        wayback_results = discover_media_wayback_cdx(media, target, wayback_client, wayback_config, time_window=time_window)
+                        media_results = _merge_discovered_rows(
+                            media_results,
+                            _filter_discovered_by_keywords(wayback_results, media, keywords, keyword_mode),
+                        )
                     results.extend(media_results)
                     time.sleep(pause)
     return results
@@ -317,6 +343,15 @@ def should_try_wayback_discovery(media: MediaConfig, config: WaybackConfig, cand
 
 def should_use_gdelt_discovery(media: MediaConfig, enabled: bool) -> bool:
     return bool(enabled and media.gdelt_discovery)
+
+
+def should_try_gdelt_discovery(media: MediaConfig, config: GdeltConfig, candidate_count: int) -> bool:
+    if not should_use_gdelt_discovery(media, config.enabled):
+        return False
+    threshold = media.gdelt_discovery_min_candidates
+    if threshold is None:
+        threshold = config.discovery_min_candidates
+    return candidate_count < threshold
 
 
 def discover_media_gdelt(
@@ -475,6 +510,9 @@ def _add_discovered_entry(
     filter_result = should_include_article_url(entry.loc, media)
     if not filter_result.included:
         return
+    matched_keywords = match_discovery_keywords(entry, media.discovery_keywords, media.discovery_keyword_mode)
+    if media.discovery_keywords and not matched_keywords:
+        return
     normalized = normalize_article_url(entry.loc)
     found[normalized] = DiscoveredURL(
         media_name=media.name,
@@ -487,6 +525,9 @@ def _add_discovered_entry(
         source_type=source_type,
         filter_status="included",
         filter_reason=filter_result.reason,
+        discovery_title=entry.title,
+        discovery_metadata=entry.metadata or {},
+        matched_keywords=matched_keywords,
     )
 
 
@@ -498,6 +539,10 @@ def _add_wayback_discovered_snapshot(
 ) -> None:
     filter_result = should_include_article_url(snapshot.original_url, media)
     if not filter_result.included:
+        return
+    entry = SitemapEntry(loc=snapshot.original_url, metadata={"wayback_timestamp": snapshot.timestamp})
+    matched_keywords = match_discovery_keywords(entry, media.discovery_keywords, media.discovery_keyword_mode)
+    if media.discovery_keywords and not matched_keywords:
         return
     normalized = normalize_article_url(snapshot.original_url)
     if normalized in found:
@@ -514,6 +559,8 @@ def _add_wayback_discovered_snapshot(
         source_type="wayback_cdx_discovery",
         filter_status="included",
         filter_reason=filter_result.reason,
+        discovery_metadata=entry.metadata or {},
+        matched_keywords=matched_keywords,
     )
 
 
@@ -525,6 +572,11 @@ def _add_gdelt_discovered_article(
 ) -> None:
     filter_result = should_include_article_url(article.url, media)
     if not filter_result.included:
+        return
+    metadata = {"seendate": article.seendate}
+    entry = SitemapEntry(loc=article.url, title=article.title, publication_date=article.seendate, metadata=metadata)
+    matched_keywords = match_discovery_keywords(entry, media.discovery_keywords, media.discovery_keyword_mode)
+    if media.discovery_keywords and not matched_keywords:
         return
     normalized = normalize_article_url(article.url)
     if normalized in found:
@@ -540,6 +592,9 @@ def _add_gdelt_discovered_article(
         source_type="gdelt",
         filter_status="included",
         filter_reason=filter_result.reason,
+        discovery_title=article.title,
+        discovery_metadata=metadata,
+        matched_keywords=matched_keywords,
     )
 
 
@@ -631,6 +686,91 @@ def _robots_sitemaps(text: str) -> list[str]:
     return sitemaps
 
 
+def _filter_discovered_by_keywords(
+    rows: list[DiscoveredURL],
+    media: MediaConfig,
+    keywords: list[str] | None,
+    keyword_mode: str,
+) -> list[DiscoveredURL]:
+    if not keywords:
+        return rows
+    filtered: list[DiscoveredURL] = []
+    for row in rows:
+        entry = SitemapEntry(
+            loc=row.url,
+            title=row.discovery_title,
+            metadata={
+                **(row.discovery_metadata or {}),
+                "discovered_from": row.discovered_from,
+                "source_type": row.source_type,
+            },
+        )
+        matched = match_discovery_keywords(entry, keywords, keyword_mode)
+        if not matched:
+            continue
+        merged = sorted(set(row.matched_keywords + matched), key=str.lower)
+        filtered.append(replace(row, matched_keywords=merged))
+    return filtered
+
+
+def _merge_discovered_rows(existing: list[DiscoveredURL], additional: list[DiscoveredURL]) -> list[DiscoveredURL]:
+    merged: dict[str, DiscoveredURL] = {}
+    for row in existing + additional:
+        normalized = normalize_article_url(row.url)
+        if normalized not in merged:
+            merged[normalized] = row
+    return list(merged.values())
+
+
+def match_discovery_keywords(entry: SitemapEntry, keywords: list[str], mode: str = "any") -> list[str]:
+    normalized_keywords = [keyword.strip() for keyword in keywords if keyword and keyword.strip()]
+    if not normalized_keywords:
+        return []
+    haystack = _discovery_keyword_haystack(entry)
+    matched = [keyword for keyword in normalized_keywords if keyword.lower() in haystack]
+    if mode == "all":
+        return matched if len(matched) == len(normalized_keywords) else []
+    if mode != "any":
+        raise ValueError("discovery keyword mode must be 'any' or 'all'")
+    return matched
+
+
+def _discovery_keyword_haystack(entry: SitemapEntry) -> str:
+    parts = [entry.loc, entry.title or ""]
+    metadata = entry.metadata or {}
+    parts.append(json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+    return " ".join(parts).lower()
+
+
+def _metadata_from_xml_node(node: ET.Element) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    scalar_fields = (
+        "title",
+        "publication_name",
+        "publication_date",
+        "keywords",
+        "genres",
+        "category",
+        "description",
+        "summary",
+        "updated",
+        "published",
+        "pubDate",
+    )
+    for field in scalar_fields:
+        value = _descendant_text(node, field)
+        if value:
+            metadata[field] = value
+    categories = [
+        (child.text or "").strip()
+        for child in node.iter()
+        if _local_name(child.tag) == "category" and child.text and child.text.strip()
+    ]
+    if categories:
+        metadata["categories"] = categories
+    return metadata
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -652,6 +792,13 @@ def _optional_float(value: object) -> float | None:
 
 def _optional_int(value: object) -> int | None:
     return None if value is None else int(value)
+
+
+def _load_keyword_mode(value: object) -> str:
+    mode = str(value or "any")
+    if mode not in {"any", "all"}:
+        raise ValueError("discovery_keyword_mode must be 'any' or 'all'")
+    return mode
 
 
 def _child_text(node: ET.Element, child_name: str) -> str | None:

@@ -14,9 +14,16 @@ def test_database_deduplicates_discovered_url() -> None:
         discovered_from="sitemap.xml",
         discovered_lastmod="2026-05-31",
         target_date="2026-05-31",
+        discovery_title="Titulo discovery",
+        discovery_metadata={"keywords": "vivienda"},
+        matched_keywords=["vivienda"],
     )
     assert database.save_discovered_url(conn, item) is True
     assert database.save_discovered_url(conn, item) is False
+    stored = database.discovered_for_date(conn, "2026-05-31")[0]
+    assert stored["discovery_title"] == "Titulo discovery"
+    assert "vivienda" in stored["discovery_metadata_json"]
+    assert "vivienda" in stored["matched_keywords_json"]
 
 
 def test_database_reuses_pangram_hash() -> None:

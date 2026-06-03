@@ -63,6 +63,9 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             source_type TEXT NOT NULL DEFAULT 'sitemap',
             filter_status TEXT NOT NULL DEFAULT 'included',
             filter_reason TEXT,
+            discovery_title TEXT,
+            discovery_metadata_json TEXT NOT NULL DEFAULT '{}',
+            matched_keywords_json TEXT NOT NULL DEFAULT '[]',
             target_date TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(normalized_url),
@@ -174,6 +177,9 @@ def _run_lightweight_migrations(conn: sqlite3.Connection) -> None:
             "source_type": "TEXT NOT NULL DEFAULT 'sitemap'",
             "filter_status": "TEXT NOT NULL DEFAULT 'included'",
             "filter_reason": "TEXT",
+            "discovery_title": "TEXT",
+            "discovery_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+            "matched_keywords_json": "TEXT NOT NULL DEFAULT '[]'",
         },
         "articles": {
             "article_published_at": "TEXT",
@@ -272,6 +278,9 @@ def upsert_media(conn: sqlite3.Connection, media: MediaConfig) -> int:
                     "wayback_discovery_broad": media.wayback_discovery_broad,
                     "gdelt_discovery": media.gdelt_discovery,
                     "gdelt_discovery_limit": media.gdelt_discovery_limit,
+                    "gdelt_discovery_min_candidates": media.gdelt_discovery_min_candidates,
+                    "discovery_keywords": media.discovery_keywords,
+                    "discovery_keyword_mode": media.discovery_keyword_mode,
                 }
             ),
             media.request_delay_seconds,
@@ -296,8 +305,9 @@ def save_discovered_url(conn: sqlite3.Connection, item: DiscoveredURL) -> bool:
         """
         INSERT OR IGNORE INTO discovered_urls
             (media_id, media_name, domain, url, normalized_url, discovered_from, lastmod,
-             discovered_lastmod, rss_published_at, source_type, filter_status, filter_reason, target_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             discovered_lastmod, rss_published_at, source_type, filter_status, filter_reason,
+             discovery_title, discovery_metadata_json, matched_keywords_json, target_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             media_id,
@@ -312,6 +322,9 @@ def save_discovered_url(conn: sqlite3.Connection, item: DiscoveredURL) -> bool:
             item.source_type,
             item.filter_status,
             item.filter_reason,
+            item.discovery_title,
+            json_dumps(item.discovery_metadata),
+            json_dumps(item.matched_keywords),
             item.target_date,
         ),
     )

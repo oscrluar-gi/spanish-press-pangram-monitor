@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -39,6 +40,9 @@ class GdeltClient:
         self._client = client
         self.headers = headers or build_request_headers()
         self._last_request = 0.0
+        self._cooldown_until = 0.0
+        self._cache: dict[tuple[tuple[str, str], ...], Any] = {}
+        self._temporary_failures: dict[tuple[tuple[str, str], ...], tuple[float, str]] = {}
         self._lock = threading.Lock()
 
     def __enter__(self) -> "GdeltClient":
@@ -93,23 +97,44 @@ class GdeltClient:
 
     def _get_json(self, params: dict[str, str]) -> Any:
         assert self._client is not None
+        cache_key = tuple(sorted(params.items()))
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            LOGGER.debug("Using cached GDELT response for %s", params.get("query"))
+            return cached
+        self._raise_if_temporarily_blocked(cache_key)
+
         last_exc: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
                 self._rate_limit()
                 response = self._client.get(GDELT_DOC_URL, params=params)
-                if response.status_code == 429 or response.status_code >= 500:
+                if response.status_code == 429:
+                    self._activate_cooldown(cache_key, "HTTP 429")
+                    if self.config.cooldown_seconds > 0:
+                        raise RuntimeError(f"GDELT rate-limited; cooldown active for {self.config.cooldown_seconds:.0f}s")
                     if attempt < self.config.max_retries:
-                        LOGGER.info("Retrying GDELT in %.2fs after HTTP %s", self.config.retry_delay_seconds, response.status_code)
-                        time.sleep(self.config.retry_delay_seconds)
+                        delay = self._retry_delay(attempt)
+                        LOGGER.info("Retrying GDELT in %.2fs after HTTP 429", delay)
+                        time.sleep(delay)
+                        continue
+                if response.status_code >= 500:
+                    if attempt < self.config.max_retries:
+                        delay = self._retry_delay(attempt)
+                        LOGGER.info("Retrying GDELT in %.2fs after HTTP %s", delay, response.status_code)
+                        time.sleep(delay)
                         continue
                 response.raise_for_status()
-                return response.json()
+                payload = response.json()
+                self._cache[cache_key] = payload
+                return payload
             except Exception as exc:
                 last_exc = exc
+                self._raise_if_temporarily_blocked(cache_key)
                 if attempt < self.config.max_retries:
-                    LOGGER.info("Retrying GDELT in %.2fs after %s", self.config.retry_delay_seconds, exc)
-                    time.sleep(self.config.retry_delay_seconds)
+                    delay = self._retry_delay(attempt)
+                    LOGGER.info("Retrying GDELT in %.2fs after %s", delay, exc)
+                    time.sleep(delay)
                     continue
                 break
         raise RuntimeError(str(last_exc))
@@ -123,6 +148,38 @@ class GdeltClient:
                 time.sleep(remaining)
             self._last_request = time.monotonic()
 
+    def _retry_delay(self, attempt: int) -> float:
+        base = self.config.retry_delay_seconds * (2**attempt)
+        delay = min(base, self.config.max_retry_delay_seconds)
+        if self.config.retry_jitter_seconds > 0:
+            delay += random.uniform(0, self.config.retry_jitter_seconds)
+        return delay
+
+    def _activate_cooldown(self, cache_key: tuple[tuple[str, str], ...], reason: str) -> None:
+        if self.config.cooldown_seconds <= 0:
+            return
+        until = time.monotonic() + self.config.cooldown_seconds
+        with self._lock:
+            self._cooldown_until = max(self._cooldown_until, until)
+            self._temporary_failures[cache_key] = (self._cooldown_until, reason)
+        LOGGER.info("GDELT cooldown active for %.0fs after %s", self.config.cooldown_seconds, reason)
+
+    def _raise_if_temporarily_blocked(self, cache_key: tuple[tuple[str, str], ...]) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if now < self._cooldown_until:
+                remaining = self._cooldown_until - now
+                failure = self._temporary_failures.get(cache_key)
+                if failure and now >= failure[0]:
+                    self._temporary_failures.pop(cache_key, None)
+                raise RuntimeError(f"GDELT cooldown active for {remaining:.0f}s")
+            failure = self._temporary_failures.get(cache_key)
+            if failure and now < failure[0]:
+                remaining = failure[0] - now
+                raise RuntimeError(f"GDELT temporary failure cached for {remaining:.0f}s: {failure[1]}")
+            if failure:
+                self._temporary_failures.pop(cache_key, None)
+
 
 def load_gdelt_config(path: str = "config/media.yaml") -> GdeltConfig:
     try:
@@ -133,10 +190,14 @@ def load_gdelt_config(path: str = "config/media.yaml") -> GdeltConfig:
     data = raw.get("gdelt", {})
     return GdeltConfig(
         enabled=_bool_env("GDELT_ENABLED", data.get("gdelt_enabled", data.get("enabled", True))),
-        max_results_per_media=int(os.getenv("GDELT_MAX_RESULTS_PER_MEDIA") or data.get("gdelt_max_results_per_media", data.get("max_results_per_media", 100))),
+        max_results_per_media=int(os.getenv("GDELT_MAX_RESULTS_PER_MEDIA") or data.get("gdelt_max_results_per_media", data.get("max_results_per_media", 25))),
         request_delay_seconds=float(os.getenv("GDELT_REQUEST_DELAY_SECONDS") or data.get("gdelt_request_delay_seconds", data.get("request_delay_seconds", 12.0))),
         max_retries=int(os.getenv("GDELT_MAX_RETRIES") or data.get("gdelt_max_retries", data.get("max_retries", 2))),
         retry_delay_seconds=float(os.getenv("GDELT_RETRY_DELAY_SECONDS") or data.get("gdelt_retry_delay_seconds", data.get("retry_delay_seconds", 15.0))),
+        max_retry_delay_seconds=float(os.getenv("GDELT_MAX_RETRY_DELAY_SECONDS") or data.get("gdelt_max_retry_delay_seconds", data.get("max_retry_delay_seconds", 120.0))),
+        retry_jitter_seconds=float(os.getenv("GDELT_RETRY_JITTER_SECONDS") or data.get("gdelt_retry_jitter_seconds", data.get("retry_jitter_seconds", 3.0))),
+        cooldown_seconds=float(os.getenv("GDELT_COOLDOWN_SECONDS") or data.get("gdelt_cooldown_seconds", data.get("cooldown_seconds", 300.0))),
+        discovery_min_candidates=int(os.getenv("GDELT_DISCOVERY_MIN_CANDIDATES") or data.get("gdelt_discovery_min_candidates", data.get("discovery_min_candidates", 5))),
         timeout_seconds=float(os.getenv("GDELT_TIMEOUT_SECONDS") or data.get("gdelt_timeout_seconds", data.get("timeout_seconds", 30.0))),
     )
 

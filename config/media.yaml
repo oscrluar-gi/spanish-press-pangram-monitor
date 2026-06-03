@@ -4,9 +4,12 @@ defaults: &article_defaults
   include_liveblogs: false
   include_opinion: true
   include_sports: true
+  discovery_keywords: []
+  discovery_keyword_mode: "any"
   allow_month_fallback: false
   gdelt_discovery: true
-  gdelt_discovery_limit: 50
+  gdelt_discovery_limit: 25
+  gdelt_discovery_min_candidates: 5
   request_delay_seconds: 1.5
   max_concurrency_per_domain: 1
   max_retries: 2
@@ -34,10 +37,14 @@ wayback:
 
 gdelt:
   gdelt_enabled: true
-  gdelt_max_results_per_media: 100
+  gdelt_max_results_per_media: 25
   gdelt_request_delay_seconds: 12
   gdelt_max_retries: 2
   gdelt_retry_delay_seconds: 15
+  gdelt_max_retry_delay_seconds: 120
+  gdelt_retry_jitter_seconds: 3
+  gdelt_cooldown_seconds: 300
+  gdelt_discovery_min_candidates: 5
   gdelt_timeout_seconds: 30
 
 media:
@@ -60,7 +67,6 @@ media:
   - name: "ABC"
     <<: *article_defaults
     domain: "abc.es"
-    gdelt_discovery_limit: 100
     wayback_discovery: true
     wayback_discovery_min_candidates: 2
     wayback_discovery_limit: 250
@@ -81,7 +87,6 @@ media:
   - name: "La Vanguardia"
     <<: *article_defaults
     domain: "lavanguardia.com"
-    gdelt_discovery_limit: 100
     wayback_discovery: true
     wayback_discovery_min_candidates: 2
     wayback_discovery_limit: 250
@@ -133,7 +138,6 @@ media:
   - name: "El Economista"
     <<: *article_defaults
     domain: "eleconomista.es"
-    gdelt_discovery_limit: 100
     wayback_discovery: true
     wayback_discovery_min_candidates: 2
     wayback_discovery_limit: 250
@@ -148,7 +152,6 @@ media:
   - name: "Marca"
     <<: *article_defaults
     domain: "marca.com"
-    gdelt_discovery_limit: 100
     wayback_discovery: true
     wayback_discovery_min_candidates: 2
     wayback_discovery_limit: 250

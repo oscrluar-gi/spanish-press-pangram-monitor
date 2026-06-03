@@ -1,21 +1,25 @@
+import inspect
 from datetime import date
 
 from src.discover import (
     SitemapEntry,
     discover_media_gdelt,
+    discover_all,
     discover_media_wayback_cdx,
     entry_matches_target,
     expand_sitemap_urls,
+    match_discovery_keywords,
     parse_rss_xml,
     parse_sitemap_xml,
     prioritize_sitemap_index_entries,
     should_use_gdelt_discovery,
+    should_try_gdelt_discovery,
     should_try_wayback_discovery,
     should_use_wayback_discovery,
     wayback_discovery_patterns,
 )
 from src.gdelt_client import GdeltArticle
-from src.models import MediaConfig, WaybackConfig
+from src.models import GdeltConfig, MediaConfig, WaybackConfig
 from src.wayback_client import WaybackSnapshot
 
 
@@ -28,6 +32,8 @@ def test_parse_urlset_sitemap_with_news_date() -> None:
         <lastmod>2026-05-31T08:00:00+02:00</lastmod>
         <news:news>
           <news:publication_date>2026-05-31T07:45:00+02:00</news:publication_date>
+          <news:title>El Congreso aprueba una reforma de vivienda</news:title>
+          <news:keywords>vivienda, congreso</news:keywords>
         </news:news>
       </url>
     </urlset>"""
@@ -38,9 +44,22 @@ def test_parse_urlset_sitemap_with_news_date() -> None:
             loc="https://example.com/2026/05/31/article.html",
             lastmod="2026-05-31T08:00:00+02:00",
             publication_date="2026-05-31T07:45:00+02:00",
+            title="El Congreso aprueba una reforma de vivienda",
+            metadata={
+                "publication_date": "2026-05-31T07:45:00+02:00",
+                "title": "El Congreso aprueba una reforma de vivienda",
+                "keywords": "vivienda, congreso",
+            },
         )
     ]
     assert entry_matches_target(entries[0], date(2026, 5, 31))
+
+
+def test_discover_all_accepts_keyword_filters() -> None:
+    signature = inspect.signature(discover_all)
+
+    assert "keywords" in signature.parameters
+    assert "keyword_mode" in signature.parameters
 
 
 def test_parse_sitemap_index() -> None:
@@ -58,11 +77,29 @@ def test_parse_sitemap_index() -> None:
 def test_parse_rss_xml() -> None:
     xml = b"""<rss><channel><item>
       <link>https://example.com/story</link>
+      <title>Sanidad anuncia nuevas plazas MIR</title>
+      <category>sanidad</category>
       <pubDate>Sun, 31 May 2026 10:15:00 +0200</pubDate>
     </item></channel></rss>"""
     entries = parse_rss_xml(xml)
     assert entries[0].loc == "https://example.com/story"
+    assert entries[0].title == "Sanidad anuncia nuevas plazas MIR"
+    assert entries[0].metadata["categories"] == ["sanidad"]
     assert entry_matches_target(entries[0], date(2026, 5, 31))
+
+
+def test_match_discovery_keywords_uses_url_title_and_metadata() -> None:
+    entry = SitemapEntry(
+        loc="https://example.com/economia/story.html",
+        title="El alquiler sube en Madrid",
+        metadata={"keywords": "vivienda, precios"},
+    )
+
+    assert match_discovery_keywords(entry, ["economia"]) == ["economia"]
+    assert match_discovery_keywords(entry, ["alquiler"]) == ["alquiler"]
+    assert match_discovery_keywords(entry, ["vivienda"]) == ["vivienda"]
+    assert match_discovery_keywords(entry, ["alquiler", "vivienda"], mode="all") == ["alquiler", "vivienda"]
+    assert match_discovery_keywords(entry, ["alquiler", "sanidad"], mode="all") == []
 
 
 def test_expand_sitemap_url_templates() -> None:
@@ -166,7 +203,7 @@ class FakeGdeltClient:
 
 
 def test_gdelt_discovery_filters_and_dedupes_articles() -> None:
-    media = MediaConfig("ABC", "abc.es", gdelt_discovery=True, gdelt_discovery_limit=100)
+    media = MediaConfig("ABC", "abc.es", gdelt_discovery=True, gdelt_discovery_limit=100, discovery_keywords=["titulo"])
     rows = discover_media_gdelt(media, date(2026, 5, 1), FakeGdeltClient(), default_limit=50)
 
     assert len(rows) == 1
@@ -174,12 +211,27 @@ def test_gdelt_discovery_filters_and_dedupes_articles() -> None:
     assert rows[0].source_type == "gdelt"
     assert rows[0].discovered_from == "gdelt"
     assert rows[0].discovered_lastmod == "20260501T210000Z"
+    assert rows[0].discovery_title == "Titulo"
+    assert rows[0].matched_keywords == ["titulo"]
 
 
 def test_should_use_gdelt_discovery_requires_media_opt_in() -> None:
     assert should_use_gdelt_discovery(MediaConfig("ABC", "abc.es"), True)
     assert not should_use_gdelt_discovery(MediaConfig("ABC", "abc.es", gdelt_discovery=False), True)
     assert not should_use_gdelt_discovery(MediaConfig("ABC", "abc.es", gdelt_discovery=True), False)
+
+
+def test_should_try_gdelt_discovery_uses_candidate_threshold() -> None:
+    media = MediaConfig("ABC", "abc.es", gdelt_discovery=True)
+    config = GdeltConfig(discovery_min_candidates=5)
+
+    assert should_try_gdelt_discovery(media, config, candidate_count=0)
+    assert should_try_gdelt_discovery(media, config, candidate_count=4)
+    assert not should_try_gdelt_discovery(media, config, candidate_count=5)
+
+    custom_media = MediaConfig("ABC", "abc.es", gdelt_discovery=True, gdelt_discovery_min_candidates=2)
+    assert should_try_gdelt_discovery(custom_media, config, candidate_count=1)
+    assert not should_try_gdelt_discovery(custom_media, config, candidate_count=2)
 
 
 def test_wayback_discovery_patterns_can_be_configured() -> None:

@@ -65,6 +65,19 @@ def _build_time_window(date: str, start_time: str | None, end_time: str | None, 
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _parse_keywords(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    keywords = [item.strip() for item in value.split(",") if item.strip()]
+    return keywords or None
+
+
+def _validate_keyword_mode(value: str) -> str:
+    if value not in {"any", "all"}:
+        raise typer.BadParameter("keyword mode must be one of: any, all")
+    return value
+
+
 def _row_in_time_window(row: object, time_window: tuple[datetime, datetime] | None) -> bool:
     if time_window is None:
         return True
@@ -136,21 +149,26 @@ def discover(
     start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
     hours: Optional[int] = typer.Option(None, "--hours", help="Optional window length in hours from --start-time."),
+    keywords: Optional[str] = typer.Option(None, "--keywords", help="Comma-separated keywords to match in discovery URL, title, or source metadata."),
+    keyword_mode: str = typer.Option("any", "--keyword-mode", help="Keyword matching mode: any or all."),
 ) -> None:
     """Discover article URLs from sitemaps and configured RSS feeds."""
     setup_logging()
     parse_target_date(date)
     time_window = _build_time_window(date, start_time, end_time, hours)
+    parsed_keywords = _parse_keywords(keywords)
+    keyword_mode = _validate_keyword_mode(keyword_mode)
     conn, _ = _prepare_db()
     database.upsert_media_many(conn, load_media_config(config))
-    items = discover_all(config, date, time_window=time_window, media_filter=media)
+    items = discover_all(config, date, time_window=time_window, media_filter=media, keywords=parsed_keywords, keyword_mode=keyword_mode)
     inserted = 0
     for item in items:
         inserted += int(database.save_discovered_url(conn, item))
     window_label = _time_window_label(time_window)
     media_label = f" media={media}" if media else ""
-    database.log_run(conn, "discover", date, "ok", f"{inserted} new URLs, {len(items)} candidates{window_label}{media_label}")
-    typer.echo(f"Discovery complete: {len(items)} candidates, {inserted} new URLs.{window_label}{media_label}")
+    keyword_label = f" keywords={','.join(parsed_keywords)} mode={keyword_mode}" if parsed_keywords else ""
+    database.log_run(conn, "discover", date, "ok", f"{inserted} new URLs, {len(items)} candidates{window_label}{media_label}{keyword_label}")
+    typer.echo(f"Discovery complete: {len(items)} candidates, {inserted} new URLs.{window_label}{media_label}{keyword_label}")
 
 
 @app.command()
@@ -164,6 +182,8 @@ def extract(
     start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
     hours: Optional[int] = typer.Option(None, "--hours", help="Optional window length in hours from --start-time."),
+    keywords: Optional[str] = typer.Option(None, "--keywords", help="Comma-separated discovery keywords to match in URL, title, or source metadata."),
+    keyword_mode: str = typer.Option("any", "--keyword-mode", help="Keyword matching mode: any or all."),
 ) -> None:
     """Extract clean article text for discovered URLs."""
     setup_logging()
@@ -317,7 +337,7 @@ def run(
     """Run the full discovery, extraction, and Pangram analysis pipeline."""
     load_environment()
     _validate_wayback_mode(wayback)
-    discover(date=date, config=config, start_time=start_time, end_time=end_time, hours=hours)
+    discover(date=date, config=config, start_time=start_time, end_time=end_time, hours=hours, keywords=keywords, keyword_mode=keyword_mode)
     extract(date=date, wayback=wayback, config=config, start_time=start_time, end_time=end_time, hours=hours)
     analyze_command(date=date, per_media_limit=per_media_limit, start_time=start_time, end_time=end_time, hours=hours)
 

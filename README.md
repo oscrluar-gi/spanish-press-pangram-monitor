@@ -49,6 +49,8 @@ Los medios viven en `config/media.yaml`. Cada entrada puede definir:
 - `sitemap_page_range`: rango para plantillas con `{page}`.
 - `include_url_patterns` / `exclude_url_patterns`: filtros regex por medio.
 - `include_liveblogs`, `include_opinion`, `include_sports`: controles de inclusion.
+- `discovery_keywords`: palabras clave opcionales para filtrar discovery por URL, titulo o metadatos de la fuente.
+- `discovery_keyword_mode`: `any` o `all`.
 - `gdelt_discovery`, `gdelt_discovery_limit`: discovery complementario mediante GDELT.
 - `wayback_discovery`, `wayback_discovery_min_candidates`: discovery historico mediante Wayback/CDX si faltan candidatos.
 - `request_delay_seconds`, `max_concurrency_per_domain`, `max_retries`: limites por medio.
@@ -86,6 +88,30 @@ Para probar o reintentar un solo medio:
 ```powershell
 python -m src.main discover --date 2026-05-31 --media abc
 ```
+
+Para descubrir solo articulos que mencionen palabras clave en la URL, titulo o metadatos disponibles en sitemap/RSS/GDELT:
+
+```powershell
+python -m src.main discover --date 2026-05-31 --keywords "vivienda, alquiler"
+python -m src.main discover --date 2026-05-31 --keywords "vivienda, alquiler" --keyword-mode all
+```
+
+`--keyword-mode any` incluye el articulo si aparece cualquiera de las palabras. `--keyword-mode all` exige que aparezcan todas. El match se hace sobre:
+
+- URL normalizada/canónica disponible en discovery;
+- titulo RSS, GDELT o `news:title` de Google News sitemap cuando exista;
+- metadatos XML disponibles, como `news:keywords`, categorias RSS, descripcion, `publication_name`, fecha y fuente.
+
+Tambien puedes configurar keywords fijas por medio en `config/media.yaml`:
+
+```yaml
+discovery_keywords:
+  - vivienda
+  - alquiler
+discovery_keyword_mode: "any"
+```
+
+SQLite guarda `discovery_title`, `discovery_metadata_json` y `matched_keywords_json` en `discovered_urls` para auditar por que entro cada URL.
 
 `analyze` no reenvia articulos con resultado Pangram salvo que pases `--force`. Los articulos `no_text`, `too_short` y `paywall_or_incomplete` no se envian salvo que uses `--include-incomplete`.
 
@@ -140,6 +166,7 @@ Para trabajar con una franja horaria concreta, usa `--start-time` con `--hours` 
 
 ```powershell
 python -m src.main discover --date 2026-05-01 --start-time 05:00 --hours 4
+python -m src.main discover --date 2026-05-01 --start-time 05:00 --hours 4 --keywords "vivienda, alquiler"
 python -m src.main extract --date 2026-05-01 --start-time 05:00 --hours 4 --wayback fallback
 ```
 
@@ -148,26 +175,33 @@ Algunos medios publican sitemaps mensuales sin dia exacto en la URL. Para esos c
 `discover` usa varias fuentes de URLs en este orden:
 
 1. sitemaps/RSS configurados y fallbacks;
-2. GDELT, si `gdelt_discovery` esta activo;
+2. GDELT solo como fallback si los candidatos utiles quedan por debajo de `gdelt_discovery_min_candidates`;
 3. Wayback/CDX discovery solo si el medio queda por debajo de `wayback_discovery_min_candidates`.
 
-GDELT esta activo por defecto en `defaults` con un limite moderado. Puedes bajarlo o desactivarlo por medio:
+GDELT esta activo por defecto en `defaults`, pero no se llama si sitemaps/RSS ya aportan suficientes candidatos tras filtros de URL y keywords. El limite por defecto es bajo para reducir presion sobre la API. Puedes ajustar el umbral, bajarlo mas o desactivarlo por medio:
 
 ```yaml
 gdelt:
   gdelt_enabled: true
-  gdelt_max_results_per_media: 100
+  gdelt_max_results_per_media: 25
   gdelt_request_delay_seconds: 12
   gdelt_max_retries: 2
   gdelt_retry_delay_seconds: 15
+  gdelt_max_retry_delay_seconds: 120
+  gdelt_retry_jitter_seconds: 3
+  gdelt_cooldown_seconds: 300
+  gdelt_discovery_min_candidates: 5
   gdelt_timeout_seconds: 30
 
 media:
   - name: "ABC"
     domain: "abc.es"
     gdelt_discovery: true
-    gdelt_discovery_limit: 100
+    gdelt_discovery_limit: 25
+    gdelt_discovery_min_candidates: 5
 ```
+
+Los retries de GDELT usan backoff exponencial con jitter. Si GDELT devuelve HTTP 429, el cliente activa un cooldown global durante `gdelt_cooldown_seconds`; durante ese periodo se omiten nuevas llamadas a GDELT y el discovery sigue con lo encontrado por sitemaps/RSS/Wayback. Las respuestas exitosas se cachean en memoria por dominio/rango/limite durante la ejecucion.
 
 Las URLs encontradas se guardan con `source_type=gdelt` y `discovered_from=gdelt`. GDELT aporta `seendate`, que se guarda como `discovered_lastmod`, pero no sustituye a `article_published_at`: la fecha real se valida despues en `extract`. Si GDELT trae duplicados o articulos fuera de fecha, los constraints de URL normalizada y la validacion de extraccion los contienen.
 
@@ -245,7 +279,7 @@ wayback:
 
 Tambien puedes usar variables `.env` equivalentes: `WAYBACK_ENABLED`, `WAYBACK_STRATEGY`, `WAYBACK_MAX_DAYS_AFTER`, `WAYBACK_MAX_DAYS_BEFORE`, `WAYBACK_REQUEST_DELAY_SECONDS`, `WAYBACK_MAX_RETRIES`, `WAYBACK_TIMEOUT_SECONDS`, `WAYBACK_USE_CDX`, `WAYBACK_USE_AVAILABILITY`, `WAYBACK_EXTENDED_SEARCH`, `WAYBACK_EXTENDED_MAX_DAYS_AFTER`, `WAYBACK_EXTENDED_MAX_DAYS_BEFORE`, `WAYBACK_DISCOVERY_ENABLED`, `WAYBACK_DISCOVERY_MAX_URLS_PER_MEDIA`, `WAYBACK_DISCOVERY_MAX_DAYS_AFTER`, `WAYBACK_DISCOVERY_MAX_DAYS_BEFORE`, `WAYBACK_DISCOVERY_TIMEOUT_SECONDS`, `WAYBACK_DISCOVERY_MAX_RETRIES`, `WAYBACK_DISCOVERY_MIN_CANDIDATES`.
 
-GDELT tambien acepta variables `.env`: `GDELT_ENABLED`, `GDELT_MAX_RESULTS_PER_MEDIA`, `GDELT_REQUEST_DELAY_SECONDS`, `GDELT_MAX_RETRIES`, `GDELT_RETRY_DELAY_SECONDS`, `GDELT_TIMEOUT_SECONDS`.
+GDELT tambien acepta variables `.env`: `GDELT_ENABLED`, `GDELT_MAX_RESULTS_PER_MEDIA`, `GDELT_REQUEST_DELAY_SECONDS`, `GDELT_MAX_RETRIES`, `GDELT_RETRY_DELAY_SECONDS`, `GDELT_MAX_RETRY_DELAY_SECONDS`, `GDELT_RETRY_JITTER_SECONDS`, `GDELT_COOLDOWN_SECONDS`, `GDELT_DISCOVERY_MIN_CANDIDATES`, `GDELT_TIMEOUT_SECONDS`.
 
 Diferencia de procedencia:
 

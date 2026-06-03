@@ -23,6 +23,9 @@ class MediaConfig:
     wayback_discovery_broad: bool = False
     gdelt_discovery: bool = True
     gdelt_discovery_limit: int | None = None
+    gdelt_discovery_min_candidates: int | None = None
+    discovery_keywords: list[str] = field(default_factory=list)
+    discovery_keyword_mode: str = "any"
     request_delay_seconds: float | None = None
     max_concurrency_per_domain: int | None = None
     max_retries: int | None = None
@@ -54,10 +57,14 @@ class WaybackConfig:
 @dataclass(frozen=True)
 class GdeltConfig:
     enabled: bool = True
-    max_results_per_media: int = 100
+    max_results_per_media: int = 25
     request_delay_seconds: float = 12.0
     max_retries: int = 2
     retry_delay_seconds: float = 15.0
+    max_retry_delay_seconds: float = 120.0
+    retry_jitter_seconds: float = 3.0
+    cooldown_seconds: float = 300.0
+    discovery_min_candidates: int = 5
     timeout_seconds: float = 30.0
 
 
@@ -73,6 +80,9 @@ class DiscoveredURL:
     source_type: str = "sitemap"
     filter_status: str = "included"
     filter_reason: str | None = None
+    discovery_title: str | None = None
+    discovery_metadata: dict[str, object] = field(default_factory=dict)
+    matched_keywords: list[str] = field(default_factory=list)
 
     @property
     def lastmod(self) -> str | None:
