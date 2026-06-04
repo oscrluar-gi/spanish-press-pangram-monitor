@@ -267,6 +267,10 @@ def upsert_media(conn: sqlite3.Connection, media: MediaConfig) -> int:
                 {
                     "include_url_patterns": media.include_url_patterns,
                     "exclude_url_patterns": media.exclude_url_patterns,
+                    "canonical_domain": media.canonical_domain,
+                    "gdelt_domain": media.gdelt_domain,
+                    "wayback_domains": media.wayback_domains,
+                    "adapter": media.adapter,
                     "include_liveblogs": media.include_liveblogs,
                     "include_opinion": media.include_opinion,
                     "include_sports": media.include_sports,

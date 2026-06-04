@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import httpx
 
 from src.discover import entry_matches_target, load_media_config, parse_rss_xml
+from src.media_adapters import get_media_adapter
 from src.models import MediaConfig
 from src.url_filters import should_include_article_url
 from src.utils import MADRID_TZ, build_request_headers, normalize_article_url, parse_target_date
@@ -81,7 +82,8 @@ def probe_wayback_robots(
     max_results: int,
 ) -> list[SourceProbeRow]:
     rows: list[SourceProbeRow] = []
-    robots_urls = [f"https://www.{media.domain}/robots.txt", f"https://{media.domain}/robots.txt"]
+    hosts = [media.canonical_host, *media.wayback_hosts, media.domain]
+    robots_urls = [f"https://{host}/robots.txt" for host in _dedupe_strings(hosts)]
     for robots_url in robots_urls:
         snapshots, error = cdx_snapshots(client, robots_url, target, max_results=3, mimetype_filter=None)
         if error:
@@ -139,10 +141,11 @@ def probe_wayback_rss(
     max_results: int,
 ) -> list[SourceProbeRow]:
     rows: list[SourceProbeRow] = []
-    if not media.rss_feeds:
+    rss_feeds = _rss_feeds_for_probe(media, target)
+    if not rss_feeds:
         return [_error_row("wayback_rss", media, None, "no RSS feeds configured")]
 
-    for feed_url in media.rss_feeds:
+    for feed_url in rss_feeds:
         snapshots, error = cdx_snapshots(client, feed_url, target, max_results=3, mimetype_filter=None)
         if error:
             rows.append(_error_row("wayback_rss", media, feed_url, error))
@@ -193,7 +196,8 @@ def probe_gdelt(
     max_results: int,
 ) -> list[SourceProbeRow]:
     rows: list[SourceProbeRow] = []
-    for query in (f"domainis:{media.domain}", f"domain:{media.domain}"):
+    query_domain = media.gdelt_host
+    for query in (f"domainis:{query_domain}", f"domain:{query_domain}"):
         params = {
             "query": query,
             "mode": "ArtList",
@@ -246,7 +250,7 @@ def probe_web_search(
     *,
     max_results: int,
 ) -> list[SourceProbeRow]:
-    query = f"site:{media.domain} {target:%Y-%m-%d}"
+    query = f"site:{media.gdelt_host} {target:%Y-%m-%d}"
     params = {"q": query}
     try:
         response = client.get(DUCKDUCKGO_HTML_URL, params=params)
@@ -477,6 +481,22 @@ def _dedupe_rows(rows: list[SourceProbeRow]) -> list[SourceProbeRow]:
             continue
         seen.add(key)
         result.append(row)
+    return result
+
+
+def _rss_feeds_for_probe(media: MediaConfig, target: date) -> list[str]:
+    adapter = get_media_adapter(media)
+    return _dedupe_strings(list(media.rss_feeds) + adapter.extra_rss_feeds(media, target))
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
     return result
 
 

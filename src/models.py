@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 class MediaConfig:
     name: str
     domain: str
+    canonical_domain: str | None = None
+    gdelt_domain: str | None = None
+    wayback_domains: list[str] = field(default_factory=list)
+    adapter: str | None = None
     sitemap_urls: list[str] = field(default_factory=list)
     sitemap_page_range: tuple[int, int] | None = None
     rss_feeds: list[str] = field(default_factory=list)
@@ -29,6 +33,18 @@ class MediaConfig:
     request_delay_seconds: float | None = None
     max_concurrency_per_domain: int | None = None
     max_retries: int | None = None
+
+    @property
+    def canonical_host(self) -> str:
+        return self.canonical_domain or self.domain
+
+    @property
+    def gdelt_host(self) -> str:
+        return self.gdelt_domain or self.domain
+
+    @property
+    def wayback_hosts(self) -> list[str]:
+        return self.wayback_domains or [self.domain]
 
 
 @dataclass(frozen=True)

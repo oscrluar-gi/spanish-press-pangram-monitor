@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -176,6 +177,15 @@ def text_sha256(text: str) -> str:
 
 def normalize_text_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def normalize_search_text(text: str | None) -> str:
+    """Normalize text for forgiving keyword matching without changing stored values."""
+    if not text:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return normalize_text_whitespace(without_accents).lower()
 
 
 def count_words(text: str | None) -> int:

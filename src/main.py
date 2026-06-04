@@ -178,6 +178,7 @@ def extract(
     config: str = typer.Option("config/media.yaml", "--config", help="Media YAML config path."),
     media: Optional[str] = typer.Option(None, "--media", help="Only extract rows for media whose name contains this value."),
     limit: Optional[int] = typer.Option(None, "--limit", help="Maximum number of discovered URLs to extract."),
+    per_media_limit: Optional[int] = typer.Option(None, "--per-media-limit", help="Maximum discovered URLs to extract per media."),
     only_failed: bool = typer.Option(False, "--only-failed", help="Only retry rows that are missing or not already ok."),
     start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
@@ -200,6 +201,8 @@ def extract(
     if only_failed:
         ok_statuses = {"ok", "ok_live", "ok_wayback"}
         rows = [row for row in rows if row["current_extraction_status"] not in ok_statuses]
+    if per_media_limit is not None:
+        rows = _limit_rows_per_media(rows, max(0, per_media_limit))
     if limit is not None:
         rows = rows[: max(0, limit)]
     if not rows:
@@ -333,6 +336,8 @@ def run(
     start_time: Optional[str] = typer.Option(None, "--start-time", help="Optional start time in HH:MM Europe/Madrid."),
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Optional end time in HH:MM Europe/Madrid."),
     hours: Optional[int] = typer.Option(None, "--hours", help="Optional window length in hours from --start-time."),
+    keywords: Optional[str] = typer.Option(None, "--keywords", help="Comma-separated keywords to match during discovery."),
+    keyword_mode: str = typer.Option("any", "--keyword-mode", help="Keyword matching mode: any or all."),
 ) -> None:
     """Run the full discovery, extraction, and Pangram analysis pipeline."""
     load_environment()

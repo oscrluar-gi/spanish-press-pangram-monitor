@@ -16,6 +16,7 @@ import httpx
 import yaml
 
 from src.gdelt_client import GdeltArticle, GdeltClient, load_gdelt_config
+from src.media_adapters import get_media_adapter
 from src.models import DiscoveredURL, GdeltConfig, MediaConfig, WaybackConfig
 from src.url_filters import should_include_article_url
 from src.utils import (
@@ -25,6 +26,7 @@ from src.utils import (
     datetime_matches_target,
     datetime_in_window,
     normalize_article_url,
+    normalize_search_text,
     parse_datetime,
     parse_target_date,
     start_end_for_date,
@@ -32,6 +34,7 @@ from src.utils import (
     url_month_hint,
 )
 from src.wayback_client import WaybackClient, WaybackSnapshot, load_wayback_config, timestamp_to_datetime
+from src.wayback_client import build_wayback_raw_url
 
 LOGGER = logging.getLogger(__name__)
 SITEMAP_CANDIDATES = ("sitemap.xml", "sitemap_index.xml", "news-sitemap.xml")
@@ -86,7 +89,11 @@ def load_media_config(path: str = "config/media.yaml") -> list[MediaConfig]:
     return [
         MediaConfig(
             name=item["name"],
-            domain=item["domain"].replace("https://", "").replace("http://", "").strip("/"),
+            domain=_normalize_config_domain(item["domain"]),
+            canonical_domain=_optional_domain(item.get("canonical_domain")),
+            gdelt_domain=_optional_domain(item.get("gdelt_domain")),
+            wayback_domains=[_normalize_config_domain(value) for value in item.get("wayback_domains") or []],
+            adapter=str(item["adapter"]).strip() if item.get("adapter") else None,
             sitemap_urls=list(item.get("sitemap_urls") or []),
             sitemap_page_range=_load_page_range(item.get("sitemap_page_range")),
             rss_feeds=list(item.get("rss_feeds") or []),
@@ -199,10 +206,11 @@ def discover_media(
     max_urls = int(os.getenv("PRESS_MONITOR_MAX_URLS_PER_DOMAIN", "20000"))
     max_retries = media.max_retries if media.max_retries is not None else int(os.getenv("PRESS_MONITOR_MAX_RETRIES", "2"))
 
-    sitemap_candidates = sitemap_candidates_for_media(media, target, robots.sitemaps(media.domain))
+    fetch_domain = media.canonical_host
+    sitemap_candidates = sitemap_candidates_for_media(media, target, robots.sitemaps(fetch_domain))
 
     for sitemap_url, source_name, source_type in sitemap_candidates:
-        if not robots.can_fetch(media.domain, sitemap_url):
+        if not robots.can_fetch(fetch_domain, sitemap_url):
             LOGGER.info("robots.txt disallows %s", sitemap_url)
             continue
         try:
@@ -223,15 +231,16 @@ def discover_media(
         except Exception as exc:
             LOGGER.debug("Sitemap candidate failed %s: %s", sitemap_url, exc)
 
-    for feed in media.rss_feeds:
-        feed_url = feed if feed.startswith(("http://", "https://")) else urljoin(f"https://{media.domain}/", feed)
-        if not robots.can_fetch(media.domain, feed_url):
+    adapter = get_media_adapter(media)
+    for feed in _rss_feeds_for_media(media, target):
+        feed_url = feed if feed.startswith(("http://", "https://")) else urljoin(f"https://{fetch_domain}/", feed)
+        if not robots.can_fetch(fetch_domain, feed_url):
             LOGGER.info("robots.txt disallows %s", feed_url)
             continue
         try:
             content = fetch_text(client, feed_url, retries=max_retries)
             for entry in parse_rss_xml(content):
-                if entry_matches_target(entry, target, time_window=time_window, allow_month_fallback=media.allow_month_fallback):
+                if media_entry_matches_target(media, entry, target, time_window=time_window):
                     _add_discovered_entry(found, media, entry, feed_url, target, "rss")
         except Exception as exc:
             LOGGER.debug("RSS feed failed %s: %s", feed_url, exc)
@@ -241,9 +250,13 @@ def discover_media(
 
 def sitemap_candidates_for_media(media: MediaConfig, target: date, robots_sitemaps: list[str] | None = None) -> list[tuple[str, str, str]]:
     configured = [(url, source, "configured_sitemap") for url, source in expand_sitemap_urls(media, target)]
+    adapter_urls = [
+        (url, f"adapter:{get_media_adapter(media).name}", "adapter_sitemap")
+        for url in get_media_adapter(media).extra_sitemap_urls(media, target)
+    ]
     robots = [(url, "robots.txt", "robots_sitemap") for url in robots_sitemaps or []]
-    fallback = [(f"https://{media.domain}/{candidate}", candidate, "fallback_sitemap") for candidate in SITEMAP_CANDIDATES]
-    return _dedupe_sitemap_candidates(configured + robots + fallback)
+    fallback = [(f"https://{media.canonical_host}/{candidate}", candidate, "fallback_sitemap") for candidate in SITEMAP_CANDIDATES]
+    return _dedupe_sitemap_candidates(configured + adapter_urls + robots + fallback)
 
 
 def expand_sitemap_urls(media: MediaConfig, target: date) -> list[tuple[str, str]]:
@@ -254,7 +267,7 @@ def expand_sitemap_urls(media: MediaConfig, target: date) -> list[tuple[str, str
         "day": f"{target.day:02d}",
     }
     for template in media.sitemap_urls:
-        absolute_template = template if template.startswith(("http://", "https://")) else urljoin(f"https://{media.domain}/", template)
+        absolute_template = template if template.startswith(("http://", "https://")) else urljoin(f"https://{media.canonical_host}/", template)
         if "{page}" in absolute_template:
             start, end = media.sitemap_page_range or (0, 0)
             for page in range(start, end + 1):
@@ -264,6 +277,11 @@ def expand_sitemap_urls(media: MediaConfig, target: date) -> list[tuple[str, str
             continue
         expanded.append((absolute_template.format(**replacements), template))
     return expanded
+
+
+def _rss_feeds_for_media(media: MediaConfig, target: date) -> list[str]:
+    adapter = get_media_adapter(media)
+    return _dedupe_strings(list(media.rss_feeds) + adapter.extra_rss_feeds(media, target))
 
 
 def _dedupe_sitemap_candidates(candidates: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
@@ -297,6 +315,7 @@ def discover_all(
     headers = build_request_headers(user_agent)
     pause = float(os.getenv("PRESS_MONITOR_DOMAIN_PAUSE_SECONDS", "1.5"))
     results: list[DiscoveredURL] = []
+    per_media_results: dict[str, list[DiscoveredURL]] = {}
 
     with httpx.Client(headers=headers, timeout=timeout, follow_redirects=True) as client:
         robots = RobotsCache(client, user_agent)
@@ -308,23 +327,61 @@ def discover_all(
         ) as wayback_client:
             with GdeltClient(config=gdelt_config, headers=headers) as gdelt_client:
                 for media in media_items:
-                    LOGGER.info("Discovering %s (%s)", media.name, media.domain)
+                    LOGGER.info("Discovering %s (%s) from configured/adapted sources", media.name, media.domain)
                     media_results = discover_media(media, target, client, robots, time_window=time_window)
                     media_results = _filter_discovered_by_keywords(media_results, media, keywords, keyword_mode)
+                    per_media_results[media.name] = media_results
+                    time.sleep(pause)
+
+                for media in _fallback_media_order(media_items, per_media_results, "gdelt", gdelt_config, wayback_config, target):
+                    media_results = per_media_results.get(media.name, [])
                     if should_try_gdelt_discovery(media, gdelt_config, len(media_results)):
+                        LOGGER.info(
+                            "Trying GDELT fallback for %s because candidates=%s threshold=%s",
+                            media.name,
+                            len(media_results),
+                            gdelt_threshold_for_media(media, gdelt_config),
+                        )
                         gdelt_results = discover_media_gdelt(media, target, gdelt_client, gdelt_config.max_results_per_media, time_window=time_window)
                         media_results = _merge_discovered_rows(
                             media_results,
                             _filter_discovered_by_keywords(gdelt_results, media, keywords, keyword_mode),
                         )
+                        per_media_results[media.name] = media_results
+                        time.sleep(pause)
+
+                for media in _fallback_media_order(media_items, per_media_results, "wayback", gdelt_config, wayback_config, target):
+                    media_results = per_media_results.get(media.name, [])
+                    if should_try_wayback_rss_discovery(media, wayback_config, len(media_results), target):
+                        LOGGER.info(
+                            "Trying Wayback RSS discovery for %s because candidates=%s threshold=%s",
+                            media.name,
+                            len(media_results),
+                            wayback_threshold_for_media(media, wayback_config),
+                        )
+                        wayback_rss_results = discover_media_wayback_rss(media, target, wayback_client, wayback_config, time_window=time_window)
+                        media_results = _merge_discovered_rows(
+                            media_results,
+                            _filter_discovered_by_keywords(wayback_rss_results, media, keywords, keyword_mode),
+                        )
+                        per_media_results[media.name] = media_results
                     if should_try_wayback_discovery(media, wayback_config, len(media_results)):
+                        LOGGER.info(
+                            "Trying Wayback CDX discovery for %s because candidates=%s threshold=%s",
+                            media.name,
+                            len(media_results),
+                            wayback_threshold_for_media(media, wayback_config),
+                        )
                         wayback_results = discover_media_wayback_cdx(media, target, wayback_client, wayback_config, time_window=time_window)
                         media_results = _merge_discovered_rows(
                             media_results,
                             _filter_discovered_by_keywords(wayback_results, media, keywords, keyword_mode),
                         )
-                    results.extend(media_results)
+                        per_media_results[media.name] = media_results
                     time.sleep(pause)
+
+    for media in media_items:
+        results.extend(per_media_results.get(media.name, []))
     return results
 
 
@@ -335,10 +392,16 @@ def should_use_wayback_discovery(media: MediaConfig, config: WaybackConfig) -> b
 def should_try_wayback_discovery(media: MediaConfig, config: WaybackConfig, candidate_count: int) -> bool:
     if not should_use_wayback_discovery(media, config):
         return False
-    threshold = media.wayback_discovery_min_candidates
-    if threshold is None:
-        threshold = config.discovery_min_candidates
-    return candidate_count < threshold
+    return candidate_count < wayback_threshold_for_media(media, config)
+
+
+def should_try_wayback_rss_discovery(media: MediaConfig, config: WaybackConfig, candidate_count: int, target: date) -> bool:
+    adapter = get_media_adapter(media)
+    if not (config.enabled and config.discovery_enabled and config.use_cdx and adapter.use_wayback_rss):
+        return False
+    if not _rss_feeds_for_media(media, target):
+        return False
+    return candidate_count < wayback_threshold_for_media(media, config)
 
 
 def should_use_gdelt_discovery(media: MediaConfig, enabled: bool) -> bool:
@@ -348,10 +411,35 @@ def should_use_gdelt_discovery(media: MediaConfig, enabled: bool) -> bool:
 def should_try_gdelt_discovery(media: MediaConfig, config: GdeltConfig, candidate_count: int) -> bool:
     if not should_use_gdelt_discovery(media, config.enabled):
         return False
-    threshold = media.gdelt_discovery_min_candidates
-    if threshold is None:
-        threshold = config.discovery_min_candidates
-    return candidate_count < threshold
+    return candidate_count < gdelt_threshold_for_media(media, config)
+
+
+def gdelt_threshold_for_media(media: MediaConfig, config: GdeltConfig) -> int:
+    return media.gdelt_discovery_min_candidates if media.gdelt_discovery_min_candidates is not None else config.discovery_min_candidates
+
+
+def wayback_threshold_for_media(media: MediaConfig, config: WaybackConfig) -> int:
+    return media.wayback_discovery_min_candidates if media.wayback_discovery_min_candidates is not None else config.discovery_min_candidates
+
+
+def _fallback_media_order(
+    media_items: list[MediaConfig],
+    per_media_results: dict[str, list[DiscoveredURL]],
+    stage: str,
+    gdelt_config: GdeltConfig,
+    wayback_config: WaybackConfig,
+    target: date,
+) -> list[MediaConfig]:
+    def needs_stage(media: MediaConfig) -> bool:
+        count = len(per_media_results.get(media.name, []))
+        if stage == "gdelt":
+            return should_try_gdelt_discovery(media, gdelt_config, count)
+        if stage == "wayback":
+            return should_try_wayback_rss_discovery(media, wayback_config, count, target) or should_try_wayback_discovery(media, wayback_config, count)
+        return False
+
+    selected = [media for media in media_items if needs_stage(media)]
+    return sorted(selected, key=lambda media: len(per_media_results.get(media.name, [])))
 
 
 def discover_media_gdelt(
@@ -365,9 +453,9 @@ def discover_media_gdelt(
     start, end = _gdelt_discovery_window(target, time_window)
     limit = media.gdelt_discovery_limit or default_limit
     try:
-        articles = client.find_articles(media.domain, start, end, limit=limit)
+        articles = client.find_articles(media.gdelt_host, start, end, limit=limit)
     except Exception as exc:
-        LOGGER.info("GDELT discovery failed for %s: %s", media.domain, exc)
+        LOGGER.info("GDELT discovery failed for %s: %s", media.gdelt_host, exc)
         return []
     for article in articles:
         _add_gdelt_discovered_article(found, media, article, target)
@@ -386,10 +474,11 @@ def discover_media_wayback_cdx(
     limit = media.wayback_discovery_limit or config.discovery_max_urls_per_media
     snapshots: list[WaybackSnapshot] = []
     if media.wayback_discovery_broad:
-        try:
-            snapshots.extend(client.find_domain_snapshots_cdx(media.domain, start, end, limit=limit))
-        except Exception as exc:
-            LOGGER.info("Wayback broad CDX discovery failed for %s: %s", media.domain, exc)
+        for domain in media.wayback_hosts:
+            try:
+                snapshots.extend(client.find_domain_snapshots_cdx(domain, start, end, limit=limit))
+            except Exception as exc:
+                LOGGER.info("Wayback broad CDX discovery failed for %s: %s", domain, exc)
     for pattern in wayback_discovery_patterns(media, target):
         try:
             snapshots.extend(client.find_url_pattern_snapshots_cdx(pattern, start, end, limit=limit))
@@ -403,28 +492,67 @@ def discover_media_wayback_cdx(
     return list(found.values())
 
 
+def discover_media_wayback_rss(
+    media: MediaConfig,
+    target: date,
+    client: WaybackClient,
+    config: WaybackConfig,
+    time_window: tuple[datetime, datetime] | None = None,
+) -> list[DiscoveredURL]:
+    found: dict[str, DiscoveredURL] = {}
+    start, end = _wayback_discovery_window(target, config, time_window)
+    for feed_url in _rss_feeds_for_media(media, target):
+        absolute_feed = feed_url if feed_url.startswith(("http://", "https://")) else urljoin(f"https://{media.canonical_host}/", feed_url)
+        try:
+            snapshots = client.find_resource_snapshots_cdx(absolute_feed, start, end, limit=3)
+        except Exception as exc:
+            LOGGER.info("Wayback RSS CDX failed for %s (%s): %s", media.domain, absolute_feed, exc)
+            continue
+        for snapshot in snapshots:
+            try:
+                raw_url = build_wayback_raw_url(snapshot)
+                content = client.fetch_text(raw_url).encode("utf-8", errors="ignore")
+                entries = parse_rss_xml(content)
+            except Exception as exc:
+                LOGGER.info("Wayback RSS fetch/parse failed for %s (%s): %s", media.domain, absolute_feed, exc)
+                continue
+            for entry in entries:
+                if media_entry_matches_target(media, entry, target, time_window=time_window):
+                    metadata = {
+                        **(entry.metadata or {}),
+                        "wayback_rss_feed": absolute_feed,
+                        "wayback_rss_timestamp": snapshot.timestamp,
+                    }
+                    _add_discovered_entry(
+                        found,
+                        media,
+                        replace(entry, metadata=metadata),
+                        f"wayback_rss:{absolute_feed}:{snapshot.timestamp}",
+                        target,
+                        "wayback_rss",
+                    )
+    return list(found.values())
+
+
 def wayback_discovery_patterns(media: MediaConfig, target: date) -> list[str]:
-    replacements = {
-        "domain": media.domain,
+    base_replacements = {
         "year": f"{target.year:04d}",
         "month": f"{target.month:02d}",
         "day": f"{target.day:02d}",
         "yyyymmdd": f"{target.year:04d}{target.month:02d}{target.day:02d}",
     }
-    configured = [
-        template.format(**replacements)
-        for template in media.wayback_discovery_patterns
-    ]
+    adapter = get_media_adapter(media)
+    configured: list[str] = adapter.extra_wayback_discovery_patterns(media, target)
+    for domain in media.wayback_hosts:
+        replacements = {**base_replacements, "domain": domain}
+        configured.extend(template.format(**replacements) for template in media.wayback_discovery_patterns)
     if configured:
-        return configured
-    return [
-        f"www.{media.domain}/*/{replacements['year']}/{replacements['month']}/{replacements['day']}/*",
-        f"{media.domain}/*/{replacements['year']}/{replacements['month']}/{replacements['day']}/*",
-        f"*.{media.domain}/*/{replacements['year']}/{replacements['month']}/{replacements['day']}/*",
-        f"www.{media.domain}/*{replacements['yyyymmdd']}*",
-        f"{media.domain}/*{replacements['yyyymmdd']}*",
-        f"*.{media.domain}/*{replacements['yyyymmdd']}*",
-    ]
+        return _dedupe_strings(configured)
+    patterns: list[str] = []
+    for domain in media.wayback_hosts:
+        replacements = {**base_replacements, "domain": domain}
+        patterns.extend(_default_wayback_patterns_for_domain(domain, replacements))
+    return _dedupe_strings(patterns)
 
 
 def entry_matches_target(
@@ -448,6 +576,28 @@ def entry_matches_target(
     if allow_month_fallback and not _has_entry_level_date(entry) and url_month_hint(entry.loc) == (target.year, target.month):
         return True
     return datetime_matches_target(entry.lastmod, target)
+
+
+def media_entry_matches_target(
+    media: MediaConfig,
+    entry: SitemapEntry,
+    target: date,
+    time_window: tuple[datetime, datetime] | None = None,
+) -> bool:
+    adapter_result = get_media_adapter(media).entry_matches_target(
+        entry,
+        target,
+        time_window,
+        media.allow_month_fallback,
+    )
+    if adapter_result is not None:
+        return adapter_result
+    return entry_matches_target(
+        entry,
+        target,
+        time_window=time_window,
+        allow_month_fallback=media.allow_month_fallback,
+    )
 
 
 def _discover_sitemap_url(
@@ -474,8 +624,10 @@ def _discover_sitemap_url(
     content = fetch_text(client, sitemap_url, retries=max_retries)
     kind, entries = parse_sitemap_xml(content)
     if kind == "sitemapindex":
+        adapter = get_media_adapter(media)
+        entries = adapter.filter_sitemap_index_entries(entries, target)
         for entry in prioritize_sitemap_index_entries(entries, target)[:max_sitemaps]:
-            if not robots.can_fetch(media.domain, entry.loc):
+            if not robots.can_fetch(media.canonical_host, entry.loc):
                 continue
             _discover_sitemap_url(
                 media,
@@ -495,7 +647,7 @@ def _discover_sitemap_url(
         return
 
     for entry in entries[:max_urls]:
-        if entry_matches_target(entry, target, time_window=time_window, allow_month_fallback=media.allow_month_fallback):
+        if media_entry_matches_target(media, entry, target, time_window=time_window):
             _add_discovered_entry(found, media, entry, discovered_from, target, source_type)
 
 
@@ -507,6 +659,11 @@ def _add_discovered_entry(
     target: date,
     source_type: str,
 ) -> None:
+    adapter = get_media_adapter(media)
+    adapted_url = adapter.normalize_discovery_url(entry.loc)
+    if not adapter.should_include_url(adapted_url):
+        return
+    entry = replace(entry, loc=adapted_url)
     filter_result = should_include_article_url(entry.loc, media)
     if not filter_result.included:
         return
@@ -526,7 +683,7 @@ def _add_discovered_entry(
         filter_status="included",
         filter_reason=filter_result.reason,
         discovery_title=entry.title,
-        discovery_metadata=entry.metadata or {},
+        discovery_metadata=_metadata_with_trace(entry.metadata or {}, media),
         matched_keywords=matched_keywords,
     )
 
@@ -537,21 +694,25 @@ def _add_wayback_discovered_snapshot(
     snapshot: WaybackSnapshot,
     target: date,
 ) -> None:
-    filter_result = should_include_article_url(snapshot.original_url, media)
+    adapter = get_media_adapter(media)
+    original_url = adapter.normalize_discovery_url(snapshot.original_url)
+    if not adapter.should_include_url(original_url):
+        return
+    filter_result = should_include_article_url(original_url, media)
     if not filter_result.included:
         return
-    entry = SitemapEntry(loc=snapshot.original_url, metadata={"wayback_timestamp": snapshot.timestamp})
+    entry = SitemapEntry(loc=original_url, metadata={"wayback_timestamp": snapshot.timestamp})
     matched_keywords = match_discovery_keywords(entry, media.discovery_keywords, media.discovery_keyword_mode)
     if media.discovery_keywords and not matched_keywords:
         return
-    normalized = normalize_article_url(snapshot.original_url)
+    normalized = normalize_article_url(original_url)
     if normalized in found:
         return
     capture_dt = timestamp_to_datetime(snapshot.timestamp).astimezone(MADRID_TZ)
     found[normalized] = DiscoveredURL(
         media_name=media.name,
         domain=media.domain,
-        url=snapshot.original_url,
+        url=original_url,
         discovered_from=f"wayback_cdx:{snapshot.timestamp}",
         discovered_lastmod=capture_dt.isoformat(),
         rss_published_at=None,
@@ -559,7 +720,7 @@ def _add_wayback_discovered_snapshot(
         source_type="wayback_cdx_discovery",
         filter_status="included",
         filter_reason=filter_result.reason,
-        discovery_metadata=entry.metadata or {},
+        discovery_metadata=_metadata_with_trace(entry.metadata or {}, media),
         matched_keywords=matched_keywords,
     )
 
@@ -570,21 +731,25 @@ def _add_gdelt_discovered_article(
     article: GdeltArticle,
     target: date,
 ) -> None:
-    filter_result = should_include_article_url(article.url, media)
+    adapter = get_media_adapter(media)
+    article_url = adapter.normalize_discovery_url(article.url)
+    if not adapter.should_include_url(article_url):
+        return
+    filter_result = should_include_article_url(article_url, media)
     if not filter_result.included:
         return
-    metadata = {"seendate": article.seendate}
-    entry = SitemapEntry(loc=article.url, title=article.title, publication_date=article.seendate, metadata=metadata)
+    metadata = {"seendate": article.seendate, "gdelt_query_domain": media.gdelt_host}
+    entry = SitemapEntry(loc=article_url, title=article.title, publication_date=article.seendate, metadata=metadata)
     matched_keywords = match_discovery_keywords(entry, media.discovery_keywords, media.discovery_keyword_mode)
     if media.discovery_keywords and not matched_keywords:
         return
-    normalized = normalize_article_url(article.url)
+    normalized = normalize_article_url(article_url)
     if normalized in found:
         return
     found[normalized] = DiscoveredURL(
         media_name=media.name,
         domain=media.domain,
-        url=article.url,
+        url=article_url,
         discovered_from="gdelt",
         discovered_lastmod=article.seendate,
         rss_published_at=None,
@@ -593,7 +758,7 @@ def _add_gdelt_discovered_article(
         filter_status="included",
         filter_reason=filter_result.reason,
         discovery_title=article.title,
-        discovery_metadata=metadata,
+        discovery_metadata=_metadata_with_trace(metadata, media),
         matched_keywords=matched_keywords,
     )
 
@@ -727,7 +892,7 @@ def match_discovery_keywords(entry: SitemapEntry, keywords: list[str], mode: str
     if not normalized_keywords:
         return []
     haystack = _discovery_keyword_haystack(entry)
-    matched = [keyword for keyword in normalized_keywords if keyword.lower() in haystack]
+    matched = [keyword for keyword in normalized_keywords if normalize_search_text(keyword) in haystack]
     if mode == "all":
         return matched if len(matched) == len(normalized_keywords) else []
     if mode != "any":
@@ -739,7 +904,15 @@ def _discovery_keyword_haystack(entry: SitemapEntry) -> str:
     parts = [entry.loc, entry.title or ""]
     metadata = entry.metadata or {}
     parts.append(json.dumps(metadata, ensure_ascii=False, sort_keys=True))
-    return " ".join(parts).lower()
+    return normalize_search_text(" ".join(parts))
+
+
+def _metadata_with_trace(metadata: dict[str, object], media: MediaConfig) -> dict[str, object]:
+    adapter = get_media_adapter(media)
+    return {
+        **metadata,
+        "source_trace": adapter.metadata_trace(media),
+    }
 
 
 def _metadata_from_xml_node(node: ET.Element) -> dict[str, object]:
@@ -799,6 +972,48 @@ def _load_keyword_mode(value: object) -> str:
     if mode not in {"any", "all"}:
         raise ValueError("discovery_keyword_mode must be 'any' or 'all'")
     return mode
+
+
+def _optional_domain(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = _normalize_config_domain(str(value))
+    return normalized or None
+
+
+def _normalize_config_domain(value: str) -> str:
+    return (
+        value.replace("https://", "")
+        .replace("http://", "")
+        .split("/", 1)[0]
+        .strip()
+        .strip("/")
+        .lower()
+    )
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _default_wayback_patterns_for_domain(domain: str, replacements: dict[str, str]) -> list[str]:
+    day_path = f"*/{replacements['year']}/{replacements['month']}/{replacements['day']}/*"
+    compact_date = f"*{replacements['yyyymmdd']}*"
+    hosts = [domain]
+    if not domain.startswith("www."):
+        hosts = [f"www.{domain}", domain, f"*.{domain}"]
+    patterns: list[str] = []
+    for host in hosts:
+        patterns.append(f"{host}/{day_path}")
+        patterns.append(f"{host}/{compact_date}")
+    return patterns
 
 
 def _child_text(node: ET.Element, child_name: str) -> str | None:

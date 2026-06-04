@@ -132,6 +132,37 @@ class WaybackClient:
         snapshots = parse_cdx_response(response.json(), start_datetime)
         return sorted(snapshots, key=lambda item: (item.original_url, item.timestamp))
 
+    def find_resource_snapshots_cdx(
+        self,
+        url: str,
+        start_datetime: datetime,
+        end_datetime: datetime,
+        *,
+        limit: int,
+        mimetype: str | None = None,
+    ) -> list[WaybackSnapshot]:
+        filters = ["statuscode:200"]
+        if mimetype:
+            filters.append(f"mimetype:{mimetype}")
+        params = {
+            "url": url,
+            "from": format_wayback_timestamp(start_datetime),
+            "to": format_wayback_timestamp(end_datetime),
+            "output": "json",
+            "filter": filters,
+            "collapse": "digest",
+            "fl": "timestamp,original,mimetype,statuscode,digest",
+            "limit": str(limit),
+        }
+        response = self._get(WAYBACK_CDX_URL, params=params)
+        snapshots = parse_cdx_response(response.json(), start_datetime)
+        return sorted(snapshots, key=lambda item: item.timestamp)
+
+    def fetch_text(self, url: str) -> str:
+        assert self._client is not None
+        response = self._get_direct(url)
+        return response.text
+
     def find_snapshot_availability(self, url: str, target_datetime: datetime) -> WaybackSnapshot | None:
         params = {"url": url, "timestamp": format_wayback_timestamp(target_datetime)}
         response = self._get(WAYBACK_AVAILABILITY_URL, params=params)
@@ -162,6 +193,32 @@ class WaybackClient:
                         continue
                     break
         raise RuntimeError(f"Wayback request failed: {last_exc}")
+
+    def _get_direct(self, url: str) -> httpx.Response:
+        assert self._client is not None
+        last_exc: Exception | None = None
+        with self._request_lock:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    self._rate_limit()
+                    response = self._client.get(url)
+                    if response.status_code == 429 or response.status_code >= 500:
+                        if attempt < self.max_retries:
+                            delay = _backoff_delay(attempt)
+                            LOGGER.info("Retrying Wayback fetch %s in %.2fs after HTTP %s", url, delay, response.status_code)
+                            time.sleep(delay)
+                            continue
+                    response.raise_for_status()
+                    return response
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+                    if attempt < self.max_retries:
+                        delay = _backoff_delay(attempt)
+                        LOGGER.info("Retrying Wayback fetch %s in %.2fs after %s", url, delay, exc)
+                        time.sleep(delay)
+                        continue
+                    break
+        raise RuntimeError(f"Wayback fetch failed: {last_exc}")
 
     def _rate_limit(self) -> None:
         with self._lock:

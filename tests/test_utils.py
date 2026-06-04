@@ -1,4 +1,4 @@
-from src.utils import build_request_headers, count_words, normalize_url, parse_time_window, text_sha256
+from src.utils import build_request_headers, count_words, normalize_search_text, normalize_url, parse_time_window, text_sha256
 
 
 def test_normalize_url_removes_tracking_and_fragment() -> None:
@@ -17,4 +17,8 @@ def test_text_hash_uses_normalized_whitespace() -> None:
 
 
 def test_count_words_handles_spanish_accents() -> None:
-    assert count_words("España publica artículos con información útil.") == 6
+    assert count_words("Espa\u00f1a publica art\u00edculos con informaci\u00f3n \u00fatil.") == 6
+
+
+def test_normalize_search_text_is_accent_insensitive() -> None:
+    assert normalize_search_text("Pedro S\u00e1nchez preside La Moncloa") == "pedro sanchez preside la moncloa"

@@ -4,12 +4,16 @@ defaults: &article_defaults
   include_liveblogs: false
   include_opinion: true
   include_sports: true
+  canonical_domain: null
+  gdelt_domain: null
+  wayback_domains: []
+  adapter: null
   discovery_keywords: []
   discovery_keyword_mode: "any"
   allow_month_fallback: false
   gdelt_discovery: true
   gdelt_discovery_limit: 25
-  gdelt_discovery_min_candidates: 5
+  gdelt_discovery_min_candidates: 25
   request_delay_seconds: 1.5
   max_concurrency_per_domain: 1
   max_retries: 2
@@ -27,7 +31,7 @@ wayback:
   wayback_extended_search: true
   wayback_extended_max_days_after: 30
   wayback_extended_max_days_before: 7
-  wayback_discovery_enabled: true
+  wayback_discovery_enabled: false
   wayback_discovery_max_urls_per_media: 250
   wayback_discovery_max_days_after: 3
   wayback_discovery_max_days_before: 0
@@ -44,13 +48,14 @@ gdelt:
   gdelt_max_retry_delay_seconds: 120
   gdelt_retry_jitter_seconds: 3
   gdelt_cooldown_seconds: 300
-  gdelt_discovery_min_candidates: 5
+  gdelt_discovery_min_candidates: 25
   gdelt_timeout_seconds: 30
 
 media:
   - name: "El Pais"
     <<: *article_defaults
     domain: "elpais.com"
+    adapter: "prisa"
     sitemap_urls:
       - "https://elpais.com/sitemaps/{year}/{month}/sitemap_{page}.xml"
     sitemap_page_range: [0, 5]
@@ -60,6 +65,16 @@ media:
   - name: "El Mundo"
     <<: *article_defaults
     domain: "elmundo.es"
+    canonical_domain: "www.elmundo.es"
+    gdelt_domain: "elmundo.es"
+    wayback_domains:
+      - "elmundo.es"
+      - "www.elmundo.es"
+    adapter: "elmundo"
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 1
+    wayback_discovery_limit: 100
+    gdelt_discovery_min_candidates: 25
     sitemap_urls: []
     rss_feeds:
       - "https://www.elmundo.es/rss/portada.xml"
@@ -67,9 +82,16 @@ media:
   - name: "ABC"
     <<: *article_defaults
     domain: "abc.es"
+    canonical_domain: "www.abc.es"
+    gdelt_domain: "abc.es"
+    wayback_domains:
+      - "abc.es"
+      - "www.abc.es"
+    adapter: "abc"
     wayback_discovery: true
-    wayback_discovery_min_candidates: 2
+    wayback_discovery_min_candidates: 1
     wayback_discovery_limit: 250
+    gdelt_discovery_min_candidates: 25
     sitemap_urls:
       - "https://www.abc.es/sitemap-index.xml"
       - "https://www.abc.es/sitemap_news.xml"
@@ -78,6 +100,16 @@ media:
   - name: "La Razon"
     <<: *article_defaults
     domain: "larazon.es"
+    canonical_domain: "www.larazon.es"
+    gdelt_domain: "larazon.es"
+    wayback_domains:
+      - "larazon.es"
+      - "www.larazon.es"
+    adapter: "larazon"
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 1
+    wayback_discovery_limit: 100
+    gdelt_discovery_min_candidates: 25
     sitemap_urls: []
     rss_feeds:
       - "https://www.larazon.es/arcio/rss/category/espana/"
@@ -87,9 +119,16 @@ media:
   - name: "La Vanguardia"
     <<: *article_defaults
     domain: "lavanguardia.com"
+    canonical_domain: "www.lavanguardia.com"
+    gdelt_domain: "lavanguardia.com"
+    wayback_domains:
+      - "lavanguardia.com"
+      - "www.lavanguardia.com"
+    adapter: "lavanguardia"
     wayback_discovery: true
-    wayback_discovery_min_candidates: 2
+    wayback_discovery_min_candidates: 1
     wayback_discovery_limit: 250
+    gdelt_discovery_min_candidates: 25
     sitemap_urls:
       - "https://www.lavanguardia.com/sitemap-news.xml"
     rss_feeds: []
@@ -97,6 +136,16 @@ media:
   - name: "El Confidencial"
     <<: *article_defaults
     domain: "elconfidencial.com"
+    canonical_domain: "www.elconfidencial.com"
+    gdelt_domain: "elconfidencial.com"
+    wayback_domains:
+      - "elconfidencial.com"
+      - "www.elconfidencial.com"
+    adapter: "elconfidencial"
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 1
+    wayback_discovery_limit: 100
+    gdelt_discovery_min_candidates: 25
     sitemap_urls: []
     rss_feeds:
       - "https://rss.elconfidencial.com/espana/"
@@ -106,6 +155,12 @@ media:
   - name: "eldiario.es"
     <<: *article_defaults
     domain: "eldiario.es"
+    canonical_domain: "www.eldiario.es"
+    gdelt_domain: "eldiario.es"
+    wayback_domains:
+      - "eldiario.es"
+      - "www.eldiario.es"
+    adapter: "eldiario"
     sitemap_urls:
       - "https://www.eldiario.es/sitemap_index_25b87.xml"
       - "https://www.eldiario.es/sitemap_google_news_25b87.xml"
@@ -114,6 +169,12 @@ media:
   - name: "Publico"
     <<: *article_defaults
     domain: "publico.es"
+    canonical_domain: "www.publico.es"
+    gdelt_domain: "publico.es"
+    wayback_domains:
+      - "publico.es"
+      - "www.publico.es"
+    adapter: "publico"
     sitemap_urls:
       - "https://www.publico.es/sitemap-index.xml"
     rss_feeds: []
@@ -121,6 +182,16 @@ media:
   - name: "Expansion"
     <<: *article_defaults
     domain: "expansion.com"
+    canonical_domain: "www.expansion.com"
+    gdelt_domain: "expansion.com"
+    wayback_domains:
+      - "expansion.com"
+      - "www.expansion.com"
+    adapter: "expansion"
+    wayback_discovery: true
+    wayback_discovery_min_candidates: 1
+    wayback_discovery_limit: 100
+    gdelt_discovery_min_candidates: 25
     sitemap_urls: []
     rss_feeds:
       - "https://e01-expansion.uecdn.es/rss/portada.xml"
@@ -130,17 +201,26 @@ media:
   - name: "Cinco Dias"
     <<: *article_defaults
     domain: "cincodias.elpais.com"
+    adapter: "cincodias"
     sitemap_urls:
       - "https://cincodias.elpais.com/sitemaps/{year}/{month}/sitemap_{page}.xml"
     sitemap_page_range: [0, 5]
+    gdelt_discovery_min_candidates: 50
     rss_feeds: []
 
   - name: "El Economista"
     <<: *article_defaults
     domain: "eleconomista.es"
+    canonical_domain: "www.eleconomista.es"
+    gdelt_domain: "eleconomista.es"
+    wayback_domains:
+      - "eleconomista.es"
+      - "www.eleconomista.es"
+    adapter: "eleconomista"
     wayback_discovery: true
-    wayback_discovery_min_candidates: 2
+    wayback_discovery_min_candidates: 1
     wayback_discovery_limit: 250
+    gdelt_discovery_min_candidates: 25
     sitemap_urls:
       - "https://www.eleconomista.es/sitemap_news_ssl.php"
       - "https://www.eleconomista.es/sitemap_ssl.xml"
@@ -152,9 +232,16 @@ media:
   - name: "Marca"
     <<: *article_defaults
     domain: "marca.com"
+    canonical_domain: "www.marca.com"
+    gdelt_domain: "marca.com"
+    wayback_domains:
+      - "marca.com"
+      - "www.marca.com"
+    adapter: "marca"
     wayback_discovery: true
-    wayback_discovery_min_candidates: 2
+    wayback_discovery_min_candidates: 1
     wayback_discovery_limit: 250
+    gdelt_discovery_min_candidates: 25
     sitemap_urls: []
     rss_feeds:
       - "https://e00-marca.uecdn.es/rss/portada.xml"
@@ -162,6 +249,7 @@ media:
   - name: "AS"
     <<: *article_defaults
     domain: "as.com"
+    adapter: "as"
     allow_month_fallback: true
     sitemap_urls:
       - "https://as.com/sitemaps/{year}/{month}/sitemap_{page}.xml"

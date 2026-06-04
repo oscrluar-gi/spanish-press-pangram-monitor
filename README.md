@@ -47,6 +47,10 @@ Los medios viven en `config/media.yaml`. Cada entrada puede definir:
 - `sitemap_urls`: sitemaps reales del medio.
 - `rss_feeds`: RSS reales para complementar o sustituir sitemaps.
 - `sitemap_page_range`: rango para plantillas con `{page}`.
+- `canonical_domain`: host preferido para robots.txt, RSS relativos y fallbacks de sitemap cuando el dominio publico redirige.
+- `gdelt_domain`: dominio usado solo en consultas GDELT; util cuando GDELT indexa el dominio raiz pero el medio sirve contenido en `www`.
+- `wayback_domains`: variantes de dominio a consultar en Wayback/CDX, por ejemplo raiz y `www`.
+- `adapter`: adaptador especifico de medio para sitemaps extra, normalizacion de URLs y pequenos filtros locales.
 - `include_url_patterns` / `exclude_url_patterns`: filtros regex por medio.
 - `include_liveblogs`, `include_opinion`, `include_sports`: controles de inclusion.
 - `discovery_keywords`: palabras clave opcionales para filtrar discovery por URL, titulo o metadatos de la fuente.
@@ -63,6 +67,30 @@ sitemap_urls:
 sitemap_page_range: [0, 5]
 ```
 
+Ejemplo de medio con dominios separados por fuente:
+
+```yaml
+- name: "ABC"
+  domain: "abc.es"
+  canonical_domain: "www.abc.es"
+  gdelt_domain: "abc.es"
+  wayback_domains:
+    - "abc.es"
+    - "www.abc.es"
+  adapter: "abc"
+```
+
+El pipeline general sigue siendo comun para todos los medios. Los adaptadores son pequenos hooks opcionales para casos concretos: anadir sitemaps conocidos, convertir URLs a un host canonico antes de deduplicar o excluir formatos muy especificos como galerias tecnicas.
+
+Los adaptadores actuales cubren estas familias:
+
+- `prisa`, `as`, `cincodias`: sitemaps mensuales de PRISA; AS usa `lastmod` para evitar meter todo el mes como si fuera un dia.
+- `elmundo`, `marca`, `expansion`: medios de Unidad Editorial con RSS/CDN y fallback historico por snapshots RSS de Wayback.
+- `abc`: sitemap actual, normalizacion `abc.es` -> `www.abc.es` y exclusion de galerias `-ga.html`.
+- `lavanguardia`, `eldiario`, `publico`, `elconfidencial`, `larazon`, `eleconomista`: dominios canonicos `www`, filtros locales y poda de sitemap index cuando procede.
+
+El flujo fusionado usa adaptadores como fuente principal y GDELT como fallback controlado. Wayback discovery queda como ultima red opcional porque CDX es mas lento e inestable para busquedas amplias; Wayback sigue siendo importante en `extract --wayback fallback`, donde trabaja sobre URLs concretas.
+
 Por defecto se incluyen articulos normales y opinion, y se excluyen tags, autores, videos puros, galerias, newsletters, podcasts, secciones y directos.
 
 ## Uso
@@ -70,6 +98,7 @@ Por defecto se incluyen articulos normales y opinion, y se excluyen tags, autore
 ```powershell
 python -m src.main discover --date 2026-05-31
 python -m src.main extract --date 2026-05-31 --wayback fallback
+python -m src.main extract --date 2026-05-31 --wayback fallback --per-media-limit 25
 python -m src.main analyze --date 2026-05-31 --dry-run
 python -m src.main analyze --date 2026-05-31 --per-media-limit 10
 python -m src.main analyze --date 2026-05-31 --limit 50
@@ -101,6 +130,8 @@ python -m src.main discover --date 2026-05-31 --keywords "vivienda, alquiler" --
 - URL normalizada/canónica disponible en discovery;
 - titulo RSS, GDELT o `news:title` de Google News sitemap cuando exista;
 - metadatos XML disponibles, como `news:keywords`, categorias RSS, descripcion, `publication_name`, fecha y fuente.
+
+La comparacion de keywords es tolerante a acentos y mayusculas. Por ejemplo, `Pedro Sanchez` puede coincidir con `Pedro Sánchez` si aparece en URL, titulo o metadatos.
 
 Tambien puedes configurar keywords fijas por medio en `config/media.yaml`:
 
@@ -172,11 +203,13 @@ python -m src.main extract --date 2026-05-01 --start-time 05:00 --hours 4 --wayb
 
 Algunos medios publican sitemaps mensuales sin dia exacto en la URL. Para esos casos se puede activar `allow_month_fallback: true` por medio. El discovery guardara candidatos del mes y la extraccion validara `article_published_at`; si no coincide con `target_date`, el articulo queda como `out_of_target_date` y no se envia a Pangram.
 
-`discover` usa varias fuentes de URLs en este orden:
+`discover` usa varias fuentes de URLs en fases claras:
 
-1. sitemaps/RSS configurados y fallbacks;
-2. GDELT solo como fallback si los candidatos utiles quedan por debajo de `gdelt_discovery_min_candidates`;
-3. Wayback/CDX discovery solo si el medio queda por debajo de `wayback_discovery_min_candidates`.
+1. sitemaps/RSS configurados, sitemaps extra del adaptador, robots.txt y fallbacks de sitemap baratos;
+2. GDELT solo para medios que quedan por debajo de `gdelt_discovery_min_candidates`, ordenando primero los medios con menos candidatos;
+3. Wayback RSS/CDX discovery solo al final y solo si `wayback_discovery_enabled` esta activo.
+
+Esto conserva la precision del flujo adaptado, por ejemplo evitando miles de candidatos mensuales de AS, pero recupera el recall del flujo general cuando un medio queda a cero y GDELT puede aportar URLs.
 
 GDELT esta activo por defecto en `defaults`, pero no se llama si sitemaps/RSS ya aportan suficientes candidatos tras filtros de URL y keywords. El limite por defecto es bajo para reducir presion sobre la API. Puedes ajustar el umbral, bajarlo mas o desactivarlo por medio:
 
@@ -190,7 +223,7 @@ gdelt:
   gdelt_max_retry_delay_seconds: 120
   gdelt_retry_jitter_seconds: 3
   gdelt_cooldown_seconds: 300
-  gdelt_discovery_min_candidates: 5
+  gdelt_discovery_min_candidates: 25
   gdelt_timeout_seconds: 30
 
 media:
@@ -198,21 +231,24 @@ media:
     domain: "abc.es"
     gdelt_discovery: true
     gdelt_discovery_limit: 25
-    gdelt_discovery_min_candidates: 5
+    gdelt_discovery_min_candidates: 25
 ```
 
 Los retries de GDELT usan backoff exponencial con jitter. Si GDELT devuelve HTTP 429, el cliente activa un cooldown global durante `gdelt_cooldown_seconds`; durante ese periodo se omiten nuevas llamadas a GDELT y el discovery sigue con lo encontrado por sitemaps/RSS/Wayback. Las respuestas exitosas se cachean en memoria por dominio/rango/limite durante la ejecucion.
 
 Las URLs encontradas se guardan con `source_type=gdelt` y `discovered_from=gdelt`. GDELT aporta `seendate`, que se guarda como `discovered_lastmod`, pero no sustituye a `article_published_at`: la fecha real se valida despues en `extract`. Si GDELT trae duplicados o articulos fuera de fecha, los constraints de URL normalizada y la validacion de extraccion los contienen.
 
-Para medios cuyos sitemaps son solo actuales o bloquean el acceso, se puede activar discovery historico con Wayback/CDX por medio:
+Para medios cuyos sitemaps son solo actuales o bloquean el acceso, se puede activar discovery historico con Wayback/CDX. Esta fuente esta desactivada globalmente por defecto para evitar ejecuciones lentas; activala solo cuando quieras investigar cobertura historica adicional:
 
 ```yaml
+wayback:
+  wayback_discovery_enabled: true
+
 media:
   - name: "ABC"
     domain: "abc.es"
     wayback_discovery: true
-    wayback_discovery_min_candidates: 2
+    wayback_discovery_min_candidates: 1
     wayback_discovery_limit: 250
     wayback_discovery_patterns:
       - "www.{domain}/*/{year}/{month}/{day}/*"
@@ -268,7 +304,7 @@ wayback:
   wayback_extended_search: true
   wayback_extended_max_days_after: 30
   wayback_extended_max_days_before: 7
-  wayback_discovery_enabled: true
+  wayback_discovery_enabled: false
   wayback_discovery_max_urls_per_media: 250
   wayback_discovery_max_days_after: 3
   wayback_discovery_max_days_before: 0
